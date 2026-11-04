@@ -319,7 +319,281 @@ function overChannels(grid: FineGrid, index: number, values: readonly number[]):
   grid.b[index] = values[2]! + (1 - clamp(values[5]!)) * grid.b[index]!;
 }
 
+/** Coarse-grid step (odd, so coarse cells stay centred on fine samples) for a blur level. */
+function coarseStep(blur: number, h: number): number {
+  const m = Math.floor(blur / (SAMPLES_PER_BLUR * h));
+  return m < 1 ? 1 : 2 * Math.floor((m - 1) / 2) + 1;
+}
+
+/** Blur levels spanning [cMin, cMax], spaced by max(P/2, SLICE_STEP·c) like the ground slices. */
+function blurLevels(context: Context, cMin: number, cMax: number): number[] {
+  const levels = [cMin];
+  while (levels[levels.length - 1]! < cMax) {
+    const c = levels[levels.length - 1]!;
+    levels.push(c + Math.max(context.outputPixel / 2, SLICE_STEP * c));
+  }
+  return levels;
+}
+
+/**
+ * A layer with depth, rendered by scatter: each sample's content is split
+ * between the two blur levels nearest its own blur circle (tent weights),
+ * every level is blurred with its own exact OTF, and the levels are summed.
+ * Occlusion within the layer is resolved by its sample function.
+ */
+function renderRelief(context: Context, layer: PlaneLayer, relief: { near: number; far: number }): void {
+  const { grid, optics } = context;
+  const { h, gx, gy } = grid;
+  const scale = optics.imageDistance / layer.distance;
+  const lens = { focalLength: optics.focalLength, fNumber: optics.fNumber };
+  const blurAt = (z: number): number => blurCircleDiameter(lens, optics.focusDistance, layer.distance + z);
+  const motionX = (layer.velocity?.x ?? 0) * scale * optics.shutterTime;
+  const motionY = (layer.velocity?.y ?? 0) * scale * optics.shutterTime;
+  const motion = Math.hypot(motionX, motionY);
+  const ratioMargin = RATIO_KERNEL_MARGIN * LONGEST_WAVELENGTH * optics.workingFNumber;
+  const reachOf = (c: number): number => c / 2 + motion / 2 + ratioMargin;
+
+  const cNear = blurAt(relief.near);
+  const cFar = blurAt(relief.far);
+  const focusInside = optics.focusDistance >= layer.distance + relief.near && optics.focusDistance <= layer.distance + relief.far;
+  const cMax = Math.max(cNear, cFar);
+  const levels = blurLevels(context, focusInside ? 0 : Math.min(cNear, cFar), cMax);
+  const reach = reachOf(cMax);
+
+  const { bounds } = layer;
+  let bottom = bounds.minY * scale - optics.shiftY - reach;
+  const top = bounds.maxY * scale - optics.shiftY + reach;
+  let cut = -Infinity;
+  const soft = cutSoftness(cMax);
+  if (layer.contactY !== undefined) {
+    cut = layer.contactY * scale - optics.shiftY - (cMax + Math.abs(motionY) + 2 * ratioMargin + 2 * h + soft);
+    bottom = Math.max(bottom, cut - reach - soft);
+  }
+  const x0 = grid.x(0);
+  const y0 = grid.y(0);
+  const colOf = (x: number) => (x - x0) / h;
+  const rowOf = (y: number) => (y0 - y) / h;
+  const jLo = Math.ceil(colOf(bounds.minX * scale - optics.shiftX - reach));
+  const jHi = Math.floor(colOf(bounds.maxX * scale - optics.shiftX + reach));
+  const rLo = Math.ceil(rowOf(top));
+  const rHi = Math.floor(rowOf(bottom));
+  const j0 = Math.max(0, jLo);
+  const j1 = Math.min(gx - 1, jHi);
+  const r0 = Math.max(0, rLo);
+  const r1 = Math.min(gy - 1, rHi);
+  if (j0 > j1 || r0 > r1) return;
+
+  const out: RGBA = { r: 0, g: 0, b: 0, a: 0 };
+  const sampleAt = (x: number, y: number, size: number): number => {
+    const kept = cut === -Infinity ? 1 : tentStep((y - cut) / Math.max(size, soft));
+    out.z = 0;
+    if (kept === 0) {
+      out.r = out.g = out.b = out.a = 0;
+      return 0;
+    }
+    layer.sample((x + optics.shiftX) / scale, (y + optics.shiftY) / scale, size / scale, out);
+    return kept;
+  };
+
+  // Fine samples shared by all levels sampled at full resolution.
+  const fineLevels = levels.filter((c) => coarseStep(c, h) === 1);
+  type FineCache = { j0: number; j1: number; r0: number; r1: number; w: number; data: Float32Array };
+  const buildCache = (): FineCache => {
+    const e = Math.ceil(reachOf(fineLevels[fineLevels.length - 1]!) / h) + 1;
+    const cj0 = Math.max(-e, jLo);
+    const cj1 = Math.min(gx - 1 + e, jHi);
+    const cr0 = Math.max(-e, rLo);
+    const cr1 = Math.min(gy - 1 + e, rHi);
+    const w = cj1 - cj0 + 1;
+    const data = new Float32Array(Math.max(0, w * (cr1 - cr0 + 1)) * 5);
+    for (let row = cr0; row <= cr1; row++) {
+      const y = grid.y(row);
+      for (let col = cj0; col <= cj1; col++) {
+        const kept = sampleAt(grid.x(col), y, h);
+        const i = 5 * ((row - cr0) * w + col - cj0);
+        data[i] = kept * out.r;
+        data[i + 1] = kept * out.g;
+        data[i + 2] = kept * out.b;
+        data[i + 3] = kept * out.a;
+        data[i + 4] = blurAt(out.z ?? 0);
+      }
+    }
+    return { j0: cj0, j1: cj1, r0: cr0, r1: cr1, w, data };
+  };
+  const cache: FineCache | null = fineLevels.length > 0 ? buildCache() : null;
+
+  // Coarse levels with the same step share one sample lattice (margins rounded to whole steps).
+  const marginOf = (c: number, n: number): number => n * Math.ceil((Math.ceil(reachOf(c) / h) + n) / n);
+  type Lattice = { e: number; rows: number; cols: number; filled: Uint8Array; data: Float32Array };
+  const lattices = new Map<number, Lattice>();
+  for (const c of levels) {
+    const n = coarseStep(c, h);
+    if (n === 1) continue;
+    const e = Math.max(marginOf(c, n), lattices.get(n)?.e ?? 0);
+    const rows = Math.ceil((r1 - r0 + 2 * e) / n) + 2;
+    const cols = Math.ceil((j1 - j0 + 2 * e) / n) + 2;
+    lattices.set(n, { e, rows, cols, filled: new Uint8Array(0), data: new Float32Array(0) });
+  }
+  for (const [n, lattice] of lattices) {
+    const subSamples = coarseSupersample(n) ** 2;
+    lattice.filled = new Uint8Array(lattice.rows * lattice.cols);
+    lattice.data = new Float32Array(lattice.rows * lattice.cols * subSamples * 6);
+  }
+  const latticeSample = (lattice: Lattice, n: number, kr: number, kc: number, supersample: number): number => {
+    const p = kr * lattice.cols + kc;
+    const base = p * supersample * supersample * 6;
+    if (!lattice.filled[p]) {
+      lattice.filled[p] = 1;
+      const cell = n * h;
+      const q = cell / supersample;
+      const x = grid.x(j0 - lattice.e + kc * n);
+      const y = grid.y(r0 - lattice.e + kr * n);
+      for (let i = 0; i < supersample; i++) {
+        const oy = ((i + 0.5) / supersample - 0.5) * cell;
+        for (let j = 0; j < supersample; j++) {
+          const ox = ((j + 0.5) / supersample - 0.5) * cell;
+          const kept = sampleAt(x + ox, y + oy, q);
+          const s = base + 6 * (i * supersample + j);
+          lattice.data[s] = kept;
+          lattice.data[s + 1] = out.r;
+          lattice.data[s + 2] = out.g;
+          lattice.data[s + 3] = out.b;
+          lattice.data[s + 4] = out.a;
+          lattice.data[s + 5] = kept === 0 ? 0 : blurAt(out.z ?? 0);
+        }
+      }
+    }
+    return base;
+  };
+
+  const aw = j1 - j0 + 1;
+  const acc = Array.from({ length: 6 }, () => new Float32Array(aw * (r1 - r0 + 1)));
+  let touched = false;
+  for (let k = 0; k < levels.length; k++) {
+    const c = levels[k]!;
+    const n = coarseStep(c, h);
+    const e = n === 1 ? Math.ceil(reachOf(c) / h) + n : marginOf(c, n);
+    let patch: Patch;
+    let outRows: { first: number; last: number };
+    let outCols: { first: number; last: number };
+    let pr: Float64Array;
+    let pg: Float64Array;
+    let pb: Float64Array;
+    let pa: Float64Array;
+    if (n === 1 && cache) {
+      const { data, w } = cache;
+      let ca = Infinity;
+      let cb = -Infinity;
+      let ra = Infinity;
+      let rb = -Infinity;
+      for (let row: number = cache.r0; row <= cache.r1; row++) {
+        for (let col: number = cache.j0; col <= cache.j1; col++) {
+          const i = 5 * ((row - cache.r0) * w + col - cache.j0);
+          if (data[i + 3] === 0 && data[i] === 0 && data[i + 1] === 0 && data[i + 2] === 0) continue;
+          if (tentWeight(levels, k, data[i + 4]!) === 0) continue;
+          ca = Math.min(ca, col);
+          cb = Math.max(cb, col);
+          ra = Math.min(ra, row);
+          rb = Math.max(rb, row);
+        }
+      }
+      if (ca > cb) continue;
+      patch = patchGeometry(ca, cb, ra, rb, e, 1, h);
+      const size = patch.lx * patch.ly;
+      pr = new Float64Array(size);
+      pg = new Float64Array(size);
+      pb = new Float64Array(size);
+      pa = new Float64Array(size);
+      for (let kr = 0; kr < patch.rows; kr++) {
+        const row: number = patch.rStart + kr;
+        if (row < cache.r0 || row > cache.r1) continue;
+        for (let kc = 0; kc < patch.cols; kc++) {
+          const col = patch.jStart + kc;
+          if (col < cache.j0 || col > cache.j1) continue;
+          const i = 5 * ((row - cache.r0) * w + col - cache.j0);
+          const weight = tentWeight(levels, k, data[i + 4]!);
+          if (weight === 0) continue;
+          const index = kr * patch.lx + kc;
+          pr[index] = weight * data[i]!;
+          pg[index] = weight * data[i + 1]!;
+          pb[index] = weight * data[i + 2]!;
+          pa[index] = weight * data[i + 3]!;
+        }
+      }
+      outRows = { first: Math.max(r0, ra - e), last: Math.min(r1, rb + e) };
+      outCols = { first: Math.max(j0, ca - e), last: Math.min(j1, cb + e) };
+    } else {
+      patch = patchGeometry(j0, j1, r0, r1, e, n, h);
+      const size = patch.lx * patch.ly;
+      pr = new Float64Array(size);
+      pg = new Float64Array(size);
+      pb = new Float64Array(size);
+      pa = new Float64Array(size);
+      const supersample = coarseSupersample(n);
+      const share = 1 / (supersample * supersample);
+      const lattice = lattices.get(n)!;
+      const offset = (lattice.e - e) / n;
+      const { data } = lattice;
+      let any = false;
+      for (let kr = 0; kr < patch.rows; kr++) {
+        for (let kc = 0; kc < patch.cols; kc++) {
+          const index = kr * patch.lx + kc;
+          const base = latticeSample(lattice, n, kr + offset, kc + offset, supersample);
+          for (let s = base; s < base + 6 * supersample * supersample; s += 6) {
+            const kept = data[s]!;
+            if (kept === 0) continue;
+            const weight = kept * share * tentWeight(levels, k, data[s + 5]!);
+            if (weight === 0) continue;
+            any = true;
+            pr[index] = pr[index]! + weight * data[s + 1]!;
+            pg[index] = pg[index]! + weight * data[s + 2]!;
+            pb[index] = pb[index]! + weight * data[s + 3]!;
+            pa[index] = pa[index]! + weight * data[s + 4]!;
+          }
+        }
+      }
+      if (!any) continue;
+      outRows = { first: r0, last: r1 };
+      outCols = { first: j0, last: j1 };
+    }
+    if (outRows.first > outRows.last || outCols.first > outCols.last) continue;
+    touched = true;
+    const channels = filterPatch(
+      context,
+      patch,
+      { blur: c, motionX, motionY },
+      pr,
+      pg,
+      pb,
+      pa,
+      { first: 0, last: patch.rows - 1 },
+      outputRowsOf(patch, outRows.first, outRows.last),
+    );
+    upsample(patch, channels, outCols.first, outCols.last, outRows.first, outRows.last, gx, (index, values) => {
+      const row = Math.floor(index / gx);
+      const i = (row - r0) * aw + (index - row * gx) - j0;
+      for (let ch = 0; ch < 6; ch++) acc[ch]![i] = acc[ch]![i]! + values[ch]!;
+    });
+  }
+  if (!touched) return;
+  const values = [0, 0, 0, 0, 0, 0];
+  for (let row = r0; row <= r1; row++) {
+    for (let col = j0; col <= j1; col++) {
+      const i = (row - r0) * aw + col - j0;
+      for (let ch = 0; ch < 6; ch++) values[ch] = acc[ch]![i]!;
+      overChannels(grid, row * gx + col, values);
+    }
+  }
+}
+
+/** Half-width of the ramp that ends a submerged extension below its contact line. */
+const cutSoftness = (blur: number): number => blur / 4;
+
 function renderPlane(context: Context, layer: PlaneLayer): void {
+  if (layer.relief) {
+    renderRelief(context, layer, layer.relief);
+    return;
+  }
   const { grid, optics } = context;
   const { h, gx, gy } = grid;
   const scale = optics.imageDistance / layer.distance;
@@ -338,10 +612,12 @@ function renderPlane(context: Context, layer: PlaneLayer): void {
   const top = bounds.maxY * scale - optics.shiftY + reach;
   // Submerged part: deep enough to stay opaque under every pixel the ground in front leaves partly uncovered.
   let cut = -Infinity;
+  // The cut ramps over a fraction of the blur: a hard cut sampled on a coarse grid rings visibly under large blur.
+  const soft = cutSoftness(blur);
   if (layer.contactY !== undefined) {
-    const depth = blur + Math.abs(motionY) + 2 * RATIO_KERNEL_MARGIN * LONGEST_WAVELENGTH * optics.workingFNumber + 2 * h;
+    const depth = blur + Math.abs(motionY) + 2 * RATIO_KERNEL_MARGIN * LONGEST_WAVELENGTH * optics.workingFNumber + 2 * h + soft;
     cut = layer.contactY * scale - optics.shiftY - depth;
-    bottom = Math.max(bottom, cut - reach);
+    bottom = Math.max(bottom, cut - reach - soft);
   }
   const x0 = grid.x(0);
   const y0 = grid.y(0);
@@ -360,7 +636,7 @@ function renderPlane(context: Context, layer: PlaneLayer): void {
     const q = size / supersample;
     for (let i = 0; i < supersample; i++) {
       const oy = ((i + 0.5) / supersample - 0.5) * size;
-      const kept = cut === -Infinity ? 1 : tentStep((y + oy - cut) / q);
+      const kept = cut === -Infinity ? 1 : tentStep((y + oy - cut) / Math.max(q, soft));
       if (kept === 0) continue;
       for (let j = 0; j < supersample; j++) {
         const ox = ((j + 0.5) / supersample - 0.5) * size;

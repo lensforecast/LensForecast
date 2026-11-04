@@ -47,24 +47,28 @@ The current 2.5D prototype implements steps 1 and 3–6 fully and step 2 with la
 
 ### Scene — `studio.ts`
 
-Radiance factors are in units of a white Lambertian surface under the subject illuminance \(E\) (\(L = E/\pi\)). Layers, back to front:
+Radiance factors are in units of a white Lambertian surface under the subject illuminance $E$ ($L = E/\pi$). Layers, back to front:
 
-- **Water** (`water`): a true horizontal ground plane at \(Y = -H\) out to the horizon. Each image row sees it at its own depth \(Z = H v_f / (-y')\), so ripples, perspective and defocus follow the real geometry.
-- **Background**: rocks and foliage on a plane at the background distance, ending at the waterline. Gaps in the foliage show the sky.
-- **Water in front of the background** and **water in front of the duck**: the same surface again, kept only within blur reach of the background's and the duck's waterline, so the nearer water occludes their blurred bottom edges. Because the full water surface lies behind every partly transparent edge, seams cannot leak sky: a scene whose every surface has one radiance renders uniformly within 0.5% (tested).
-- **Contact lines**: rock and water at the same depth form one continuous surface, so the water hidden behind the rock must never show through the rock's blurred waterline. The background and the duck therefore continue opaquely below their waterlines (the duck as its waterline cross-section), and the renderer keeps that submerged part exactly as deep as the blur reaches. The water in front keeps enough rows to stay opaque over it. A wall and a moving box standing in water render within 0.005 of a reference in which both are opaque all the way down (tested, three lens settings).
-- **Slanted-edge target**: 5° edge card beside the duck.
-- **Duck**: shapes with scalloped feathers whose barbs and barbules run over seven octaves down to 12–20 µm, plus mottling down to 10 µm. At 1200 mm and 10 m the 61 MP Nyquist period on the duck is 55 µm; more than 1% of the head's texture variance lies beyond 1.25× that frequency (tested), so the scene never limits a resolution comparison.
+- **Reflections** (`water.ts`): calm water is a mirror, so the reflection of an object at distance $D$ is its virtual image at the same distance $D$, mirrored about the water level (exact for flat water). Each object therefore has a mirrored layer at its own distance, and reflections blur exactly as much as the objects themselves. Each mirrored sample traces the reflected ray back to the object.
+- **Water surface** (`water`): a true horizontal ground plane at $Y = -H$ out to the horizon, drawn as a screen over the reflections: opacity $1 - R$ (Fresnel, averaged over the footprint) and the water body's upwelling colour weighted by $1 - R$. Each image row sees it at its own depth $Z = H v_f / (-y')$, so ripples, perspective and defocus follow the real geometry.
+- **Background** (`background.ts`): a wooded shore on a plane at the background distance: two rows of tree crowns with ragged leafy edges and sky gaps, trunks, a dark forest interior, shrubs, a grassy bank, partly submerged boulders and reed stands. Crowns, shrubs and boulders are shaded with sphere normals and trunks with cylinder normals (below). All shapes are prefiltered outlines and textures. Albedos are representative values (approximation).
+- **Duck** (`duck.ts`): a drake mallard built from nine ellipsoids (body, breast, rump, tail, tail curl, neck, head, bill, eyes) and ray-traced from the camera. Each sample is the true perspective point on the nearest surface, with its depth and analytic normal; silhouettes are prefiltered by their signed distance. Plumage is a set of representative albedos: an iridescent green head (its shift toward blue-violet at grazing view is a heuristic), a white neck ring, a chestnut breast, a vermiculated grey flank, brown tertials, a blue speculum between white bars, a black rump and curl, and a white tail. Feathers are warped scallop cells whose barbs and barbules run over seven octaves down to 12–20 µm, plus mottling down to 10 µm. At 1200 mm and 10 m the 61 MP Nyquist period on the duck is 55 µm; more than 1% of the head's texture variance lies beyond 1.25× that frequency (tested), so the scene never limits a resolution comparison. The eye is a cornea of $n = 1.376$: its Fresnel reflection of the sky and of the sky mirrored by the water forms the catchlight.
+- **Test chart** (optional, off by default): an ISO 12233-style card with a dark square slanted by 5°, on a wooden stake standing in the water beside the duck.
+- **Contact lines**: an object and the water it stands in form one continuous surface at the same depth, so nothing behind the object may show through its blurred waterline. Each standing object therefore continues opaquely below its waterline, wherever it meets the water, as the water in front of it: water body plus the object's own reflection, over whatever its reflected rays meet beyond it. This extension shares the object's distance, so its contact line blurs as one surface. The renderer keeps the extension exactly as deep as the blur reaches and ends it with a ramp a quarter of the blur wide, because a hard cut sampled on a coarse grid rings visibly under large blur. Within that depth, the water drawn at the object's distance differs little from the true water nearer the camera. The duck's extension is its hull: the waterline ellipse of its body. Tests: a wall and a moving box standing in water render within 0.005 of a reference in which both are opaque all the way down (three lens settings), and a mirrored wall over water shows no halo at its contact line (within 0.003). A scene whose every surface has one radiance renders uniformly within 0.5%.
 
-**Sky** (approximation): CIE standard overcast sky \(L(\gamma) = L_z(1 + 2\sin\gamma)/3\), normalized so that the illuminance on a vertical surface facing the camera equals the preset illuminance. That surface sees the sky above, \(\tfrac23(\tfrac\pi4 + \tfrac23)L_z = 0.968\,L_z\), and the sky mirrored by calm water below, \(2\int_0^{\pi/2} R(\sin\delta)L(\delta)\cos^2\delta\,d\delta = 0.148\,L_z\) with Fresnel reflectance \(R\); the horizon radiance factor is then 0.938. The water body's own upwelling light (about 1%) is neglected. Clear-sky presets use a fixed horizon luminance (8 kcd/m² sunny, 6 kcd/m² hazy) with the sun behind the photographer. The sky is neutral grey and a function of elevation only.
+**Surface shading** (approximation): a surface with normal $\mathbf n$ receives irradiance from the CIE sky above its horizon, from the sky mirrored by the water (Fresnel $R$) and, in the sun presets, from the sun behind the photographer at 35° elevation (direct $\max(0, \mathbf n\cdot\hat s)$, plus its reflection in the water). Irradiance is expressed relative to a vertical surface facing the camera, which by definition receives the preset illuminance. The sky integral is tabulated over the normal's elevation by numerical quadrature. Surfaces are Lambertian; occlusion of the sky by the subject itself and by the shore is neglected (heuristic). Tests: an upward-facing surface under the CIE sky receives $(7\pi/9)/E_v$, a downward-facing one the mirrored-sky integral, and the sun term adds $k \sin e$.
 
-**Water reflection** (approximation): a facet tilted by \(\alpha\) towards the camera, seen at depression \(\delta = \arctan(H/Z)\), reflects the sky at elevation \(\delta + 2\alpha\) with exact unpolarized Fresnel reflectance (\(n = 1.333\)) at \(\cos\theta_i = \sin(\delta + \alpha)\), plus the water body's upwelling radiance weighted by \(1 - R\). Ripple slopes (RMS-scale 0.04 rad) are a heuristic, and facets tilted away from the camera are not masked by the crests in front of them. Water reflects only the sky, not the duck or background. Footprints elongated in depth (ratio \(Z/H\)) are integrated with up to 8 sub-samples along \(Z\), matching a brute-force area average to within 5% of the texture's standard deviation at 30 and 60 m (tested).
+**Sky** (approximation): CIE standard overcast sky $L(\gamma) = L_z(1 + 2\sin\gamma)/3$, normalized so that the illuminance on a vertical surface facing the camera equals the preset illuminance. That surface sees the sky above, $\tfrac23(\tfrac\pi4 + \tfrac23)L_z = 0.968\,L_z$, and the sky mirrored by calm water below, $2\int_0^{\pi/2} R(\sin\delta)L(\delta)\cos^2\delta\,d\delta = 0.148\,L_z$ with Fresnel reflectance $R$; the horizon radiance factor is then 0.938. The water body's own upwelling light (about 1%) is neglected. Clear-sky presets use a fixed horizon luminance (8 kcd/m² sunny, 6 kcd/m² hazy) with the sun behind the photographer. The sky is neutral grey and a function of elevation only.
 
-**Prefiltering**: every sample is the scene prefiltered by a separable tent of half-width equal to the sample footprint (box ⊗ box, transfer \(\mathrm{sinc}^2(f w)\)). Outlines use the exact tent-integrated step on their signed distance; sinusoids use the exact factor \(\mathrm{sinc}^2(w/p)\); fractal noise drops octaves finer than the footprint (approximately band-limiting). The tent's sidelobes fall as \(1/f^2\), which keeps aliasing of sharp outlines on the fine grid below 0.01 of edge MTF.
+**Water reflection** (approximation): a facet tilted by $\alpha$ towards the camera, seen at depression $\delta = \arctan(H/Z)$, reflects with exact unpolarized Fresnel reflectance ($n = 1.333$) at $\cos\theta_i = \sin(\delta + \alpha)$, and the water body adds its upwelling radiance weighted by $1 - R$. The reflected ray leaves at elevation $\delta + 2\alpha$ and is deflected sideways by twice the lateral slope (first-order geometry), so ripples break up and wobble the reflections of the duck, chart, shore and sky. Ripple slopes (RMS-scale 0.012 rad, nearly calm) are a heuristic. Facets tilted away from the camera are not masked by the crests in front of them. The slope change across a footprint widens the reflected footprint accordingly. Footprints elongated in depth (ratio $Z/H$) are integrated with up to 8 sub-samples along $Z$, matching a brute-force area average to within 5% of the reflectance's standard deviation at 30 and 60 m (tested).
+
+**Subjects with depth** (approximation): the duck is a relief layer: each sample carries its own depth $z$ around the layer distance. Its content is split between the two blur levels nearest its own blur circle $c(s + z)$ (tent weights, levels spaced like the water's), every level is blurred with its own exact OTF, and the levels are summed. So the eye can be sharp while the flank 5 cm nearer is visibly soft at 1200 mm f/2.8 and 10 m, where depth of field is about 1.2 cm (tested). Occlusion within the duck is resolved per ray, so a blurred near part does not soften the far part's outline behind it as a real lens would (the same limitation as between layers). Tests: a relief at constant depth renders like a plane at that distance (within 0.003), and lines at two depths blur by their own blur circles (σ within 10%, centroid within 0.2 px).
+
+**Prefiltering**: every sample is the scene prefiltered by a separable tent of half-width equal to the sample footprint (box ⊗ box, transfer $\mathrm{sinc}^2(f w)$). Outlines use the exact tent-integrated step on their signed distance; sinusoids use the exact factor $\mathrm{sinc}^2(w/p)$; fractal noise drops octaves finer than the footprint (approximately band-limiting). The tent's sidelobes fall as $1/f^2$, which keeps aliasing of sharp outlines on the fine grid below 0.01 of edge MTF.
 
 ### Projection
 
-A point \((X, Y)\) at distance \(s\) images at \(x = X v_f/s\), with \(v_f\) the image distance at the focus distance: the chief ray through the pupil centre, which is the centre of a defocused blur circle (tested at 0.1 pixel). Camera aim is modeled as an image shift instead of a camera tilt (approximation). The position error is of order (aim angle × field angle) and reaches about 1% of the field at a 5° aim; the app warns when the aim angle exceeds 5°.
+A point $(X, Y)$ at distance $s$ images at $x = X v_f/s$, with $v_f$ the image distance at the focus distance: the chief ray through the pupil centre, which is the centre of a defocused blur circle (tested at 0.1 pixel). Camera aim is modeled as an image shift instead of a camera tilt (approximation). The position error is of order (aim angle × field angle) and reaches about 1% of the field at a 5° aim; the app warns when the aim angle exceeds 5°.
 
 ### Optics — `pipeline.ts`, `otf.ts`
 
@@ -72,34 +76,34 @@ Every blur is an analytic transfer function applied in the frequency domain:
 
 | Effect | Transfer function | Tier |
 |---|---|---|
-| Defocus with diffraction (per layer, per colour band) | Hopkins defocused-pupil OTF \(H(s) = \tfrac4\pi\int_0^{\arccos s}\sin^2\varphi\cos(\pi c f(\cos\varphi - s))\,d\varphi\), \(s = f\lambda N_w\), averaged over 5 wavelengths per band | exact for a thin, aberration-free lens |
-| Subject motion (per layer) | \(\mathrm{sinc}(\mathbf b\cdot\mathbf f)\), streak \(\mathbf b = \mathbf v\,t\,v_f/s\); at Nyquist rows and columns the ± signs are averaged so the filter stays Hermitian | exact for constant velocity |
-| Diffraction (system, per colour band) | Circular-aperture MTF at the working f-number \(N_w = N(1+m)\), averaged over the band | exact (aberration-free) |
-| Pixel integration | \(\mathrm{sinc}(P f_x)\,\mathrm{sinc}(P f_y)\), output pixel size \(P\), followed by sampling (with aliasing) | exact transfer; aliasing approximated by finite oversampling (below) |
-| Relative illumination | \(\cos^4\theta\) about the optical axis | exact for an aplanatic lens without mechanical vignetting |
+| Defocus with diffraction (per layer, per colour band) | Hopkins defocused-pupil OTF $H(s) = \tfrac4\pi\int_0^{\arccos s}\sin^2\varphi\cos(\pi c f(\cos\varphi - s))\,d\varphi$, $s = f\lambda N_w$, averaged over 5 wavelengths per band | exact for a thin, aberration-free lens |
+| Subject motion (per layer) | $\mathrm{sinc}(\mathbf b\cdot\mathbf f)$, streak $\mathbf b = \mathbf v\,t\,v_f/s$; at Nyquist rows and columns the ± signs are averaged so the filter stays Hermitian | exact for constant velocity |
+| Diffraction (system, per colour band) | Circular-aperture MTF at the working f-number $N_w = N(1+m)$, averaged over the band | exact (aberration-free) |
+| Pixel integration | $\mathrm{sinc}(P f_x)\,\mathrm{sinc}(P f_y)$, output pixel size $P$, followed by sampling (with aliasing) | exact transfer; aliasing approximated by finite oversampling (below) |
+| Relative illumination | $\cos^4\theta$ about the optical axis | exact for an aplanatic lens without mechanical vignetting |
 
-Layers apply the ratio (defocused OTF / diffraction MTF) per band; the system applies the band diffraction MTF once. The product is exactly the Hopkins OTF for defocused layers and the diffraction MTF for in-focus ones. Measured edge MTFs match the Hopkins OTF at \(c = 4\lambda N_w\) and the diffraction MTF at \(N(1+m)\) (1200 mm at 5 m) within 0.01 (tested).
+Layers apply the ratio (defocused OTF / diffraction MTF) per band; the system applies the band diffraction MTF once. The product is exactly the Hopkins OTF for defocused layers and the diffraction MTF for in-focus ones. Measured edge MTFs match the Hopkins OTF at $c = 4\lambda N_w$ and the diffraction MTF at $N(1+m)$ (1200 mm at 5 m) within 0.01 (tested).
 
 Layers are blurred individually (premultiplied colour, and coverage filtered per colour band) and composited front over back. This is exact for a moving object over a static background, but approximate for defocused occlusion edges: a real lens partially sees around a blurred foreground edge.
 
-**Water depth blur** (approximation): the ground's blur circle \(c(y') = A\,|y'/H + v_f/s_f|\) is piecewise linear in image height. Blur levels are spaced by \(\max(0.15\,c, P/2)\); each ground point's content is split between the two nearest levels with tent weights, every level is blurred with its own exact OTF, and the results are summed. This is a scatter model: each point blurs by its own depth (a line on the water at 25, 30, 40 m blurs by its own \(c\) within 10%, tested). The sum is divided by the same operator applied to the weights alone, which restores radiance invariance (a uniform surface images uniformly) and neglects the slight brightness gradient, of relative size \(A/H\), across each ground point's blur disk.
+**Water depth blur** (approximation): the ground's blur circle $c(y') = A\,|y'/H + v_f/s_f|$ is piecewise linear in image height. Blur levels are spaced by $\max(0.15\,c, P/2)$; each ground point's content is split between the two nearest levels with tent weights, every level is blurred with its own exact OTF, and the results are summed. This is a scatter model: each point blurs by its own depth (a line on the water at 25, 30, 40 m blurs by its own $c$ within 10%, tested). The sum is divided by the same operator applied to the weights alone, which restores radiance invariance (a uniform surface images uniformly) and neglects the slight brightness gradient, of relative size $A/H$, across each ground point's blur disk.
 
 Numerical choices (each verified by tests):
 
-- Fine grid oversampling: native-pitch views use up to 4 samples per output pixel, enough to carry every alias up to 2 cycles/pixel (higher aliases are suppressed by \(\mathrm{sinc}^2 < 0.02\)). The full-frame overview and previews use 2×, which under-weights aliases from above 1 cycle per output pixel (a grating at 1.3 cycles/pixel aliases with about half its true amplitude). Every camera shares the same overview pixel, so this does not bias comparisons.
-- The tent prefilter \(\mathrm{sinc}^2(f h)\) of the fine grid is divided out in the system stage, so no resolution gets an artificial advantage: the same grating renders with contrast equal to diffraction × its own pixel aperture on 24 and 61 MP, within 0.5% of each other (tested).
+- Fine grid oversampling: native-pitch views use up to 4 samples per output pixel, enough to carry every alias up to 2 cycles/pixel (higher aliases are suppressed by $\mathrm{sinc}^2 < 0.02$). The full-frame overview and previews use 2×, which under-weights aliases from above 1 cycle per output pixel (a grating at 1.3 cycles/pixel aliases with about half its true amplitude). Every camera shares the same overview pixel, so this does not bias comparisons.
+- The tent prefilter $\mathrm{sinc}^2(f h)$ of the fine grid is divided out in the system stage, so no resolution gets an artificial advantage: the same grating renders with contrast equal to diffraction × its own pixel aperture on 24 and 61 MP, within 0.5% of each other (tested).
 - Strongly defocused layers are sampled on coarser grids with ≥ 12 samples across the blur circle; the coarse sampling and bilinear upsampling transfer is replaced analytically by the fine-grid transfer.
-- FFT grids (sizes \(2^k\) or \(3\cdot2^k\)) are padded with real scene content plus a diffraction margin of \(16\lambda N_w\). The Airy pattern carries about 1% of its energy beyond that radius, so a faint wrap-around remains at the frame edges. Thin in-focus water slices are filtered periodically across the grid width when their blur fits in the margin.
+- FFT grids (sizes $2^k$ or $3\cdot2^k$) are padded with real scene content plus a diffraction margin of $16\lambda N_w$. The Airy pattern carries about 1% of its energy beyond that radius, so a faint wrap-around remains at the frame edges. Thin in-focus water slices are filtered periodically across the grid width when their blur fits in the margin.
 
 ### Readout
 
-Per output pixel: \(\bar n = H\,\Phi\,p^2\,QE \cdot k\) electrons with \(k = (P/p)^2\) sensor pixels binned and \(H\) from the camera equation including the bellows factor. The sum of \(k\) Poisson variables is Poisson, so binned shot noise is exact; read noise adds \(\sigma_r\sqrt{k}\). The full-well clip is applied to the binned sum (approximation; matters only near clipping). Output level \(= n / n_{white}(S)\), then standard sRGB encoding for display. The sRGB encoding is a display convention, not physics; no tone curve is applied.
+Per output pixel: $\bar n = H\,\Phi\,p^2\,QE \cdot k$ electrons with $k = (P/p)^2$ sensor pixels binned and $H$ from the camera equation including the bellows factor. The sum of $k$ Poisson variables is Poisson, so binned shot noise is exact; read noise adds $\sigma_r\sqrt{k}$. The full-well clip is applied to the binned sum (approximation; matters only near clipping). Output level $= n / n_{white}(S)$, then standard sRGB encoding for display. The sRGB encoding is a display convention, not physics; no tone curve is applied.
 
 Approximations still open: no Bayer colour filter array or demosaicing (every pixel sees all three bands); equal effective photon flux per band.
 
 ### Readouts — `src/readouts.ts`
 
-The numbers beside each image use the renderer's own models: exposure with the bellows factor, Airy FWHM and the limiting-factor summary at the working f-number, subject motion at the chief-ray scale \(v_f/s\), SNR at the displayed pixel size, and the aim-angle warning. A test checks that the reported EV offset equals the EV of a rendered 18% grey card.
+The numbers beside each image use the renderer's own models: exposure with the bellows factor, Airy FWHM and the limiting-factor summary at the working f-number, subject motion at the chief-ray scale $v_f/s$, SNR at the displayed pixel size, and the aim-angle warning. A test checks that the reported EV offset equals the EV of a rendered 18% grey card.
 
 ### Views
 
@@ -119,7 +123,7 @@ The numbers beside each image use the renderer's own models: exposure with the b
 
 \[ \theta = 2\arctan\frac{d}{2v} \]
 
-where \(d\) is the sensor dimension and \(v\) the image distance at the focus distance. At infinity \(v = f\):
+where $d$ is the sensor dimension and $v$ the image distance at the focus distance. At infinity $v = f$:
 100 mm gives 20.4° horizontal, 1200 mm gives 1.72°. Focusing closer narrows the field slightly (focus breathing of an ideal thin lens).
 
 ### Perspective (exact)
@@ -130,19 +134,19 @@ Perspective depends only on camera position. Changing focal length from the same
 
 \[ c = A\,\frac{|s - s_f|}{s}\cdot\frac{f}{s_f - f}, \qquad A = \frac{f}{N} \]
 
-For a background at infinity: \(c_\infty = A\,f/(s_f - f)\).
+For a background at infinity: $c_\infty = A\,f/(s_f - f)$.
 
 ### Depth of field (approximation: thin lens, chosen circle of confusion)
 
 \[ H = \frac{f^2}{N c} + f, \qquad s_{near} = \frac{s(H - f)}{H + s - 2f}, \qquad s_{far} = \frac{s(H - f)}{H - s}\ (s < H) \]
 
-Depth of field depends on the viewing assumption \(c\) (default 30 µm, a convention, not physics). The renderer itself does not use \(c\): it renders the true blur at every depth.
+Depth of field depends on the viewing assumption $c$ (default 30 µm, a convention, not physics). The renderer itself does not use $c$: it renders the true blur at every depth.
 
 Example: 1200 mm f/2.8 focused at 30 m gives ≈ 10 cm total depth of field, so a duck's body is not fully sharp.
 
 ### Realistic lens envelope (heuristic)
 
-The app allows any focal length and aperture combination. It warns when the entrance pupil \(f/N\) exceeds 160 mm, roughly the largest in common commercial lenses (600 mm f/4 ≈ 150 mm). Example: 1200 mm f/2.8 would need a 429 mm pupil. The threshold reflects the market, not physics.
+The app allows any focal length and aperture combination. It warns when the entrance pupil $f/N$ exceeds 160 mm, roughly the largest in common commercial lenses (600 mm f/4 ≈ 150 mm). Example: 1200 mm f/2.8 would need a 429 mm pupil. The threshold reflects the market, not physics.
 
 ## Diffraction — `diffraction.ts`
 
@@ -150,20 +154,20 @@ The app allows any focal length and aperture combination. It warns when the entr
 
 \[ \frac{I(r)}{I_0} = \left[\frac{2 J_1(x)}{x}\right]^2, \qquad x = \frac{\pi r}{\lambda N} \]
 
-- First dark ring diameter: \(2.44\,\lambda N\) (21.5 µm at f/16, 550 nm).
-- Full width at half maximum: \(1.029\,\lambda N\).
-- \(J_1\) uses the Numerical Recipes rational approximation (error < 1e-8).
+- First dark ring diameter: $2.44\,\lambda N$ (21.5 µm at f/16, 550 nm).
+- Full width at half maximum: $1.029\,\lambda N$.
+- $J_1$ uses the Numerical Recipes rational approximation (error < 1e-8).
 
 ### Diffraction MTF (exact)
 
 \[ \text{MTF}(\nu) = \frac{2}{\pi}\left(\arccos\nu - \nu\sqrt{1 - \nu^2}\right), \qquad \nu = \frac{f_{spatial}}{f_c}, \qquad f_c = \frac{1}{\lambda N} \]
 
-No detail finer than \(f_c\) reaches the sensor, regardless of pixel count.
+No detail finer than $f_c$ reaches the sensor, regardless of pixel count.
 
 ### Pixel sampling
 
-- Nyquist frequency: \(1/(2p)\) for pixel pitch \(p\).
-- Pixel aperture MTF (100% fill factor): \(|\mathrm{sinc}(f p)|\).
+- Nyquist frequency: $1/(2p)$ for pixel pitch $p$.
+- Pixel aperture MTF (100% fill factor): $|\mathrm{sinc}(f p)|$.
 
 | Resolution | Pixels | Pitch | Nyquist |
 |---|---|---|---|
@@ -171,15 +175,15 @@ No detail finer than \(f_c\) reaches the sensor, regardless of pixel count.
 | 33 MP | 7008 × 4672 | 5.14 µm | 97 cycles/mm |
 | 61 MP | 9564 × 6376 | 3.76 µm | 133 cycles/mm |
 
-The diffraction cutoff at 550 nm is 114 cycles/mm at f/16. Averaged over the green band (500–580 nm), the MTF at the 61 MP Nyquist frequency (133 cycles/mm) is exactly 0, and at 111 cycles/mm, beyond 24 MP Nyquist, it is about 1%: a grating there renders with under 1.5% modulation on 61 MP, matching the band-averaged prediction (tested). The extra pixels cannot add detail that diffraction has already removed. All diffraction uses the working f-number \(N_w = N(1+m)\), which at 1200 mm focused at 5 m is 32% larger than the marked aperture.
+The diffraction cutoff at 550 nm is 114 cycles/mm at f/16. Averaged over the green band (500–580 nm), the MTF at the 61 MP Nyquist frequency (133 cycles/mm) is exactly 0, and at 111 cycles/mm, beyond 24 MP Nyquist, it is about 1%: a grating there renders with under 1.5% modulation on 61 MP, matching the band-averaged prediction (tested). The extra pixels cannot add detail that diffraction has already removed. All diffraction uses the working f-number $N_w = N(1+m)$, which at 1200 mm focused at 5 m is 32% larger than the marked aperture.
 
 ### Defocus and diffraction together (exact within the thin, aberration-free model)
 
-Defocus and diffraction both come from the pupil function, so they are combined through the Hopkins (1955) defocused-pupil OTF, parameterized by the geometric blur diameter \(c\) (peak defocus wavefront error \(W_{020} = c/(8N_w)\)):
+Defocus and diffraction both come from the pupil function, so they are combined through the Hopkins (1955) defocused-pupil OTF, parameterized by the geometric blur diameter $c$ (peak defocus wavefront error $W_{020} = c/(8N_w)$):
 
 \[ H(s) = \frac{4}{\pi}\int_0^{\arccos s}\sin^2\varphi\,\cos\big(\pi c f(\cos\varphi - s)\big)\,d\varphi, \qquad s = f\lambda N_w \]
 
-It reduces to the diffraction MTF at \(c = 0\) and approaches the product of the geometric disk OTF and the diffraction MTF only for large defocus. At \(c = 4\lambda N\) the product differs from it by more than 0.15. Simpson quadrature is verified against a brute-force 2D pupil autocorrelation (`wave.test.ts`).
+It reduces to the diffraction MTF at $c = 0$ and approaches the product of the geometric disk OTF and the diffraction MTF only for large defocus. At $c = 4\lambda N$ the product differs from it by more than 0.15. Simpson quadrature is verified against a brute-force 2D pupil autocorrelation (`wave.test.ts`).
 
 ### Known limitations
 
@@ -192,10 +196,10 @@ It reduces to the diffraction MTF at \(c = 0\) and approaches the product of the
 
 \[ E = \frac{q\,L}{N^2 (1 + m)^2}\cos^4\theta, \qquad H = E\,t \]
 
-- The geometric factor \(\pi/(4N_w^2)\) is exact for an aplanatic lens obeying the sine condition (pupil magnification 1). A planar-pupil thin lens would give \(\pi/(1 + 4N_w^2)\) instead, 3.1% dimmer at f/2.8; the aplanatic form describes real photographic lenses better.
-- \(q = 0.65\) (ISO 2720) bundles \(\pi/4\) with typical transmission; absolute brightness is therefore an approximation, while ratios between settings are exact within the model.
-- \((1 + m)^2\) is the bellows factor: 0.79 EV at 1200 mm focused at 5 m, 0.12 EV at 30 m. Renderer and readouts share one implementation (`sensorExposure`).
-- \(\cos^4\theta\) is natural relative illumination about the optical axis (no mechanical vignetting): 0.91 in the corner at 100 mm, 0.9994 at 1200 mm.
+- The geometric factor $\pi/(4N_w^2)$ is exact for an aplanatic lens obeying the sine condition (pupil magnification 1). A planar-pupil thin lens would give $\pi/(1 + 4N_w^2)$ instead, 3.1% dimmer at f/2.8; the aplanatic form describes real photographic lenses better.
+- $q = 0.65$ (ISO 2720) bundles $\pi/4$ with typical transmission; absolute brightness is therefore an approximation, while ratios between settings are exact within the model.
+- $(1 + m)^2$ is the bellows factor: 0.79 EV at 1200 mm focused at 5 m, 0.12 EV at 30 m. Renderer and readouts share one implementation (`sensorExposure`).
+- $\cos^4\theta$ is natural relative illumination about the optical axis (no mechanical vignetting): 0.91 in the corner at 100 mm, 0.9994 at 1200 mm.
 
 ### Scene luminance (approximation: Lambertian surfaces)
 
@@ -203,11 +207,11 @@ It reduces to the diffraction MTF at \(c = 0\) and approaches the product of the
 
 ### Metering and ISO (exact definitions)
 
-- Reflected meter: \(t = K N^2 / (L S)\), \(K = 12.5\).
-- Incident meter: \(t = C N^2 / (E S)\), \(C = 250\).
-- ISO 12232 standard output sensitivity: middle grey at \(H_m = 10/S\).
-- ISO 12232 saturation sensitivity: clipping at \(H_{sat} = 78/S\).
-- The sensor maps white to \(H_{sat}\) (saturation-based ISO), so an 18% card at metered exposure lands at 12.8% linear, sRGB 100/255. Readouts report exposure relative to \(H_m = 10/S\); the two definitions differ by design and are both standard.
+- Reflected meter: $t = K N^2 / (L S)$, $K = 12.5$.
+- Incident meter: $t = C N^2 / (E S)$, $C = 250$.
+- ISO 12232 standard output sensitivity: middle grey at $H_m = 10/S$.
+- ISO 12232 saturation sensitivity: clipping at $H_{sat} = 78/S$.
+- The sensor maps white to $H_{sat}$ (saturation-based ISO), so an 18% card at metered exposure lands at 12.8% linear, sRGB 100/255. Readouts report exposure relative to $H_m = 10/S$; the two definitions differ by design and are both standard.
 
 Validation: the "sunny 16" rule (f/16, 1/ISO s in bright sun) is reproduced within one stop at 100,000 lux.
 
@@ -221,21 +225,21 @@ Illuminance on camera-facing (vertical) subject surfaces, i.e. what an incident 
 
 \[ n_{e^-} = H \cdot \Phi \cdot p^2 \cdot QE, \qquad \Phi = \frac{1}{683 \cdot hc/\lambda_{555}} \approx 4.09\times10^{15}\ \text{photons}/(\text{m}^2\,\text{lx}\,\text{s}) \]
 
-This is the effective photon flux of a green-filtered pixel under daylight, roughly ±50%. Generic parameters: \(QE = 0.5\), full well 1700 e⁻/µm² (≈61k e⁻ at 6 µm), read noise 2 e⁻ RMS. These give a base ISO near 100, consistent with real full-frame sensors without copying any of them.
+This is the effective photon flux of a green-filtered pixel under daylight, roughly ±50%. Generic parameters: $QE = 0.5$, full well 1700 e⁻/µm² (≈61k e⁻ at 6 µm), read noise 2 e⁻ RMS. These give a base ISO near 100, consistent with real full-frame sensors without copying any of them.
 
 ### ISO is a gain (exact within the model)
 
-ISO sets which electron count maps to white (\(H_{sat} = 78/S\)). It never changes how many photons are collected. A raised-ISO image looks noisier because it was given less light, not because of the ISO setting itself. Read noise is modeled as ISO-invariant (approximation; real sensors often use dual conversion gain).
+ISO sets which electron count maps to white ($H_{sat} = 78/S$). It never changes how many photons are collected. A raised-ISO image looks noisier because it was given less light, not because of the ISO setting itself. Read noise is modeled as ISO-invariant (approximation; real sensors often use dual conversion gain).
 
 ### Noise (shot noise exact, read noise approximation)
 
 - Photon arrivals: Poisson, sampled exactly (Knuth for λ < 10, Hörmann PTRS above).
 - Clip at full-well capacity, then add Gaussian read noise.
-- Per-pixel SNR: \(n / \sqrt{n + \sigma_r^2}\).
+- Per-pixel SNR: $n / \sqrt{n + \sigma_r^2}$.
 
 ### Fair resolution comparison (exact)
 
-Smaller pixels have lower per-pixel SNR, but at equal output size \(k = (p_{out}/p)^2\) pixels combine:
+Smaller pixels have lower per-pixel SNR, but at equal output size $k = (p_{out}/p)^2$ pixels combine:
 
 \[ \text{SNR}_{out} = \text{SNR}_{pixel}\sqrt{k} \]
 
@@ -247,13 +251,13 @@ With shot noise only, all resolutions are identical at equal output size. Read n
 
 \[ b = v\,t\,\frac{v_f}{s} \]
 
-the chief-ray scale at the subject distance \(s\) with focus at \(s_f\); it equals \(v\,t\,m\) when the subject is in focus. Example: a duck swimming 0.5 m/s at 30 m, 1200 mm, 1/250 s gives 83 µm ≈ 14 pixels on 24 MP. Focused at 10 m instead, the streak is 9% longer.
+the chief-ray scale at the subject distance $s$ with focus at $s_f$; it equals $v\,t\,m$ when the subject is in focus. Example: a duck swimming 0.5 m/s at 30 m, 1200 mm, 1/250 s gives 83 µm ≈ 14 pixels on 24 MP. Focused at 10 m instead, the streak is 9% longer.
 
 ### Camera rotation (formula exact; magnitude heuristic)
 
 \[ b = v_f \tan(\omega t) \]
 
-The angular speed \(\omega\) of a handheld camera depends on the photographer, support and stabilization. The traditional "1/focal length" shutter rule is a heuristic and will be labeled as such.
+The angular speed $\omega$ of a handheld camera depends on the photographer, support and stabilization. The traditional "1/focal length" shutter rule is a heuristic and will be labeled as such.
 
 ## Limiting-factor summary — `sharpness.ts` (heuristic)
 
@@ -261,7 +265,7 @@ For UI guidance only, each blur is reduced to a single width on the sensor (diff
 
 ## Scene detail requirement
 
-At 1200 mm and 30 m, one 61 MP pixel covers about 0.09 mm of the subject; at 10 m, about 0.03 mm. Scene textures must contain detail finer than this. Otherwise texture resolution, not the camera, limits sharpness and resolution comparisons become meaningless. Duck feathers carry detail down to 10–20 µm and the background down to 0.1 mm (tested at 1200 mm, 10 m). A slanted-edge target (ISO 12233) sits beside the duck for MTF measurement.
+At 1200 mm and 30 m, one 61 MP pixel covers about 0.09 mm of the subject; at 10 m, about 0.03 mm. Scene textures must contain detail finer than this. Otherwise texture resolution, not the camera, limits sharpness and resolution comparisons become meaningless. Duck feathers carry detail down to 10–20 µm and the background down to 0.1 mm (tested at 1200 mm, 10 m). An optional slanted-edge chart (ISO 12233) stands beside the duck for MTF measurement.
 
 ## Validation plan
 
@@ -274,8 +278,8 @@ At 1200 mm and 30 m, one 61 MP pixel covers about 0.09 mm of the subject; at 10 
 | Rendered edge MTF = band diffraction × pixel, with aliasing, within 0.01 (f/16 at 2 µm; f/4 at 6 µm) | Done, `src/render/pipeline.test.ts` |
 | Edge MTF at the working f-number (1200 mm, 5 m) and with small defocus (Hopkins), within 0.01 | Done, `fidelity.test.ts` |
 | Defocused edge equals the analytic uniform-disk edge spread, within 1% | Done |
-| Defocused planes land at the chief-ray position \(X v_f / s\), within 0.1 pixel | Done |
-| Moving edge renders as a linear ramp of length \(v t v_f/s\) | Done |
+| Defocused planes land at the chief-ray position $X v_f / s$, within 0.1 pixel | Done |
+| Moving edge renders as a linear ramp of length $v t v_f/s$ | Done |
 | Uniform surface: output equals the closed-form sensor model (with cos⁴); one stop of aperture halves the signal | Done |
 | Electron variance = mean + read noise², native and binned | Done |
 | Grating beyond 24 MP Nyquist: predicted contrast at f/4 within 1%; band residue < 1.5% at f/16 | Done |
@@ -288,6 +292,10 @@ At 1200 mm and 30 m, one 61 MP pixel covers about 0.09 mm of the subject; at 10 
 | Readout EV equals a rendered grey card; aim warning; chief-ray motion readout | Done |
 | Duck texture has detail beyond 61 MP Nyquist at 1200 mm, 10 m | Done |
 | Water footprint filtering matches a brute-force area average within 5% σ at 30 and 60 m | Done |
+| Mirror geometry of reflected rays; Fresnel screen colour; no halo where a mirrored wall meets the water | Done, `water.test.ts` |
+| Surface irradiance by normal: facing, up, down, sun | Done, `lighting.test.ts` |
+| Relief: constant depth equals a plane; two depths blur by their own blur circles | Done, `fidelity.test.ts` |
+| Ray-traced duck: true depth and perspective per ray; opaque to the waterline; in-focus head sharp while the nearer flank is soft (and vice versa) at 1200 mm f/2.8, 10 m | Done, `duck.test.ts` |
 | FFT (2^k and 3·2^k) against a naive DFT; restricted row passes; analytic OTF zeros | Done, `fft.test.ts` |
 | Measure MTF from the in-scene slanted-edge target in UI renders | Planned |
 

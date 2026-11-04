@@ -9,6 +9,8 @@ export interface RGBA {
   g: number;
   b: number;
   a: number;
+  /** Depth of the sampled point relative to its layer's distance, meters (relief layers only). */
+  z?: number;
 }
 
 export interface Bounds {
@@ -37,6 +39,13 @@ export interface PlaneLayer {
    * within blur reach. Such planes must not move vertically.
    */
   contactY?: number;
+  /**
+   * A layer with depth: `sample` reports each point's depth offset `z` from
+   * `distance`, within [near, far]. Coordinates stay those of the reference
+   * plane at `distance` (the sample function handles its own perspective);
+   * each point blurs by the blur circle of its own depth.
+   */
+  relief?: { near: number; far: number };
   /**
    * Writes the premultiplied radiance factor prefiltered by a separable tent
    * of half-width `footprint` (box ⊗ box of width `footprint`) centred on

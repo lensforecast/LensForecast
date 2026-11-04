@@ -59,12 +59,13 @@ export const EFFECT_MODELS = {
     id: "lighting",
     name: "Lighting and sky",
     tier: "approximation",
-    model: "Subject illuminance on camera-facing surfaces; CIE overcast sky or fixed clear-sky horizon luminance",
+    model:
+      "Each surface is lit by the sky above its horizon, the sky mirrored by the water and, in sun presets, the sun behind the photographer, by its normal; CIE overcast sky or fixed clear-sky horizon luminance",
     assumptions: [
-      "Lambertian surfaces",
+      "Lambertian surfaces with representative albedos; the head's iridescent sheen is a heuristic",
       "Sky is neutral grey",
       "Overcast sky normalized with its specular reflection in calm water; the water body's upwelling (≈ 1%) is neglected",
-      "No shadows or interreflections",
+      "No cast shadows, self-occlusion of the sky or interreflections",
     ],
   },
   shotNoise: {
@@ -122,11 +123,12 @@ export const EFFECT_MODELS = {
     id: "layeredOcclusion",
     name: "Occlusion and depth-varying blur",
     tier: "approximation",
-    model: "Planes blurred individually and composited front over back; the water surface is a true ground plane whose points each blur by their own depth",
+    model:
+      "Layers blurred individually and composited front over back; the water surface and the ray-traced duck are split into blur levels so each point blurs by its own depth",
     assumptions: [
       "Exact for motion over a static background",
-      "Approximate at defocused occlusion edges (no partial view around foreground objects)",
-      "Objects standing in the water continue opaquely below the waterline, so blurred contact lines show no far water",
+      "Approximate at defocused occlusion edges (no partial view around foreground objects), also within the duck",
+      "Objects standing in the water continue opaquely below the waterline as the water in front of them, so blurred contact lines show no far water",
       "Water blur blends depth slices ≤ 15% apart in blur diameter, normalized so a uniform surface renders uniformly",
       "The slight brightness gradient across each ground point's blur disk (relative size A/H) is neglected",
     ],
@@ -142,12 +144,12 @@ export const EFFECT_MODELS = {
     id: "waterReflection",
     name: "Water reflection",
     tier: "approximation",
-    model: "Exact unpolarized Fresnel reflectance (n = 1.333) of the sky at the mirror elevation",
+    model:
+      "Mirror images at each object's own distance (exact for flat water), seen through exact unpolarized Fresnel reflectance (n = 1.333)",
     assumptions: [
-      "Ripple slope amplitude is a heuristic",
+      "Ripple slope amplitude is a heuristic; ripples tilt reflected rays to first order",
       "Facets tilted away from the camera are not masked by the wave crests in front of them",
-      "Elongated footprints are integrated with up to 8 sub-samples in depth (within 4% of a brute-force area average)",
-      "Water reflects the sky only; no reflections of the duck or background",
+      "Elongated footprints are integrated with up to 8 sub-samples in depth (within 5% of a brute-force area average)",
     ],
   },
   blurBudget: {

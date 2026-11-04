@@ -95,8 +95,12 @@ export function saturationExposure(iso: number): number {
  */
 export type SkyModel =
   | { kind: "cieOvercast" }
-  /** Clear or hazy sky with a fixed horizon luminance expressed as a radiance factor. */
-  | { kind: "uniform"; radianceFactor: number };
+  /**
+   * Clear or hazy sky with a fixed horizon luminance expressed as a radiance
+   * factor; with `sunElevation` (radians), direct sun from behind the
+   * photographer supplies the rest of the subject illuminance.
+   */
+  | { kind: "uniform"; radianceFactor: number; sunElevation?: number };
 
 /**
  * CIE standard overcast sky: L(γ) = L_z (1 + 2 sin γ) / 3. Integrating over
@@ -131,6 +135,77 @@ export function skyRadianceFactor(sky: SkyModel, elevation: number): number {
   return (Math.PI * (1 + 2 * Math.sin(gamma))) / 3 / subjectIlluminance;
 }
 
+export interface Vector3 {
+  x: number;
+  y: number;
+  z: number;
+}
+
+const IRRADIANCE_TABLE_SIZE = 181;
+const irradianceTables = new Map<string, Float64Array>();
+
+/**
+ * Sky irradiance factor (1/π)∫ρ(ω)(n·ω)⁺dω as a function of the normal's
+ * elevation β. Below the horizon the sky is seen mirrored in calm water with
+ * Fresnel reflectance R(sin δ). The sky is azimuthally symmetric, so only β matters.
+ */
+function skyIrradianceTable(sky: SkyModel): Float64Array {
+  const key = sky.kind === "uniform" ? `u${sky.radianceFactor}` : "cie";
+  const cached = irradianceTables.get(key);
+  if (cached) return cached;
+  const ne = 120;
+  const na = 240;
+  const de = Math.PI / ne;
+  const da = (2 * Math.PI) / na;
+  const radiance: number[] = [];
+  for (let i = 0; i < ne; i++) {
+    const e = -Math.PI / 2 + (i + 0.5) * de;
+    const sky0 = skyRadianceFactor(sky, Math.abs(e));
+    radiance.push(e >= 0 ? sky0 : fresnelReflectance(Math.sin(-e)) * sky0);
+  }
+  const table = new Float64Array(IRRADIANCE_TABLE_SIZE);
+  for (let t = 0; t < IRRADIANCE_TABLE_SIZE; t++) {
+    const beta = -Math.PI / 2 + (t * Math.PI) / (IRRADIANCE_TABLE_SIZE - 1);
+    const ny = Math.sin(beta);
+    const nz = -Math.cos(beta);
+    let sum = 0;
+    for (let i = 0; i < ne; i++) {
+      const e = -Math.PI / 2 + (i + 0.5) * de;
+      const ce = Math.cos(e);
+      const se = Math.sin(e);
+      for (let j = 0; j < na; j++) {
+        const cosine = se * ny + ce * Math.cos((j + 0.5) * da) * nz;
+        if (cosine > 0) sum += radiance[i]! * cosine * ce;
+      }
+    }
+    table[t] = (sum * de * da) / Math.PI;
+  }
+  irradianceTables.set(key, table);
+  return table;
+}
+
+/**
+ * Irradiance on a Lambertian surface with unit normal n (x right, y up,
+ * z away from the camera) relative to a camera-facing vertical surface,
+ * which the lighting presets define. Multiplying by albedo gives the
+ * radiance factor. Shadows and interreflections are not modeled.
+ */
+export function surfaceIrradianceFactor(sky: SkyModel, normal: Vector3): number {
+  const table = skyIrradianceTable(sky);
+  const t = ((Math.asin(Math.min(Math.max(normal.y, -1), 1)) + Math.PI / 2) / Math.PI) * (IRRADIANCE_TABLE_SIZE - 1);
+  const i = Math.min(Math.floor(t), IRRADIANCE_TABLE_SIZE - 2);
+  const f = t - i;
+  const skyPart = table[i]! * (1 - f) + table[i + 1]! * f;
+  if (sky.kind !== "uniform" || sky.sunElevation === undefined) return skyPart;
+  const e = sky.sunElevation;
+  const facing = table[(IRRADIANCE_TABLE_SIZE - 1) / 2]!;
+  const reflectance = fresnelReflectance(Math.sin(e));
+  const k = (1 - facing) / (Math.cos(e) * (1 + reflectance));
+  const direct = Math.max(0, normal.y * Math.sin(e) - normal.z * Math.cos(e));
+  const mirrored = Math.max(0, -normal.y * Math.sin(e) - normal.z * Math.cos(e));
+  return skyPart + k * (direct + reflectance * mirrored);
+}
+
 export interface LightingPreset {
   id: string;
   name: string;
@@ -146,8 +221,18 @@ export interface LightingPreset {
  * and dusk use the CIE overcast sky.
  */
 export const LIGHTING_PRESETS: readonly LightingPreset[] = [
-  { id: "sun", name: "Sun behind photographer", illuminance: 75_000, sky: { kind: "uniform", radianceFactor: (8000 * Math.PI) / 75_000 } },
-  { id: "hazy", name: "Hazy sun", illuminance: 30_000, sky: { kind: "uniform", radianceFactor: (6000 * Math.PI) / 30_000 } },
+  {
+    id: "sun",
+    name: "Sun behind photographer",
+    illuminance: 75_000,
+    sky: { kind: "uniform", radianceFactor: (8000 * Math.PI) / 75_000, sunElevation: (35 * Math.PI) / 180 },
+  },
+  {
+    id: "hazy",
+    name: "Hazy sun",
+    illuminance: 30_000,
+    sky: { kind: "uniform", radianceFactor: (6000 * Math.PI) / 30_000, sunElevation: (35 * Math.PI) / 180 },
+  },
   { id: "overcast", name: "Overcast", illuminance: 5_000, sky: { kind: "cieOvercast" } },
   { id: "heavyOvercast", name: "Heavy overcast", illuminance: 1_000, sky: { kind: "cieOvercast" } },
   { id: "dusk", name: "Dusk", illuminance: 50, sky: { kind: "cieOvercast" } },

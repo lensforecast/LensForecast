@@ -11,7 +11,8 @@ import { fresnelReflectance, WATER_REFRACTIVE_INDEX } from "../physics/reflectio
 import { mm, um, WAVELENGTHS } from "../physics/units";
 import { computeReadouts } from "../readouts";
 import { readOut, renderOpticalImage } from "./pipeline";
-import { createWaterSurface, createWildlifeStudio, DEFAULT_STUDIO } from "./studio";
+import { createWildlifeStudio, DEFAULT_STUDIO } from "./studio";
+import { createWaterSurface } from "./water";
 import { aliasedEdgeMtf, baseShot, mtfFromLsf, planeScene, resolutionForPitch, row, sinc, sinusoidAmplitude } from "./testScenes";
 import { prefilteredSine, tentStep } from "./textures";
 import type { GroundLayer, RGBA, Scene, SceneLayer, ShotSettings } from "./types";
@@ -121,10 +122,103 @@ describe("contact lines with the water (re-audit: far water showed through blurr
     const out: RGBA = { r: 0, g: 0, b: 0, a: 0 };
     for (const id of ["background", "duck"]) {
       const layer = scene.layers.find((l) => l.id === id)!;
-      expect(layer.kind === "plane" && layer.contactY).toBe(-DEFAULT_STUDIO.cameraHeight);
-      if (layer.kind !== "plane") continue;
+      if (layer.kind !== "plane") throw new Error(`${id} is not a plane`);
+      // The duck's hull waterline is slightly nearer than its reference plane, so it projects a little lower.
+      expect(layer.contactY).toBeCloseTo(-DEFAULT_STUDIO.cameraHeight, 2);
+      expect(layer.contactY!).toBeLessThanOrEqual(-DEFAULT_STUDIO.cameraHeight);
       layer.sample(id === "duck" ? 0 : 1, -DEFAULT_STUDIO.cameraHeight - 0.05, 1e-4, out);
       expect(out.a).toBeCloseTo(1, 6);
+    }
+  });
+});
+
+describe("relief layers (subjects with depth)", () => {
+  const pitch = um(10);
+  const shot: ShotSettings = { ...baseShot, fNumber: 2.8, focusDistance: 25, resolution: resolutionForPitch(pitch) };
+  const lens = { focalLength: shot.focalLength, fNumber: shot.fNumber };
+  const view = { centerX: 0, centerY: 0, width: 128 * pitch, height: 32 * pitch, outputPixelSize: pitch };
+  const texture = (x: number, fp: number): number => 0.2 + 0.5 * tentStep((x - 0.01) / fp) + 0.2 * prefilteredSine((2 * Math.PI * x) / 0.013, 0.013, fp);
+
+  it("renders a relief at constant depth offset exactly like a plane at that distance", () => {
+    const plane: Scene = {
+      sky: () => 0,
+      aim: { x: 0, y: 0, distance: 32 },
+      layers: [
+        {
+          kind: "plane",
+          id: "plane",
+          distance: 32,
+          bounds: { minX: -1, maxX: 1, minY: -1, maxY: 1 },
+          sample(x, _y, fp, out) {
+            out.r = out.g = out.b = texture(x, fp);
+            out.a = 1;
+          },
+        },
+      ],
+    };
+    const k = 32 / 30;
+    const relief: Scene = {
+      ...plane,
+      layers: [
+        {
+          kind: "plane",
+          id: "relief",
+          distance: 30,
+          relief: { near: 2, far: 2 },
+          bounds: { minX: -1 / k, maxX: 1 / k, minY: -1 / k, maxY: 1 / k },
+          sample(x, _y, fp, out) {
+            out.r = out.g = out.b = texture(x * k, fp * k);
+            out.a = 1;
+            out.z = 2;
+          },
+        },
+      ],
+    };
+    const a = renderOpticalImage(plane, shot, view);
+    const b = renderOpticalImage(relief, shot, view);
+    let worst = 0;
+    for (let i = 0; i < a.g.length; i++) worst = Math.max(worst, Math.abs(a.g[i]! - b.g[i]!));
+    expect(worst).toBeLessThan(0.003);
+  });
+
+  it("blurs each part of a relief by the blur circle of its own depth", () => {
+    const scale = imageDistance(shot.focalLength, shot.focusDistance) / 30;
+    const lineX = 0.045;
+    const scene: Scene = {
+      sky: () => 0,
+      aim: { x: 0, y: 0, distance: 30 },
+      layers: [
+        {
+          kind: "plane",
+          id: "relief",
+          distance: 30,
+          relief: { near: -3, far: 5 },
+          bounds: { minX: -1, maxX: 1, minY: -1, maxY: 1 },
+          sample(x, _y, fp, out) {
+            const v = 0.1 + 0.8 * (boxOverlap(x, fp, -lineX, 1e-4) + boxOverlap(x, fp, lineX, 1e-4));
+            out.r = out.g = out.b = v;
+            out.a = 1;
+            out.z = x < 0 ? -3 : 5;
+          },
+        },
+      ],
+    };
+    const image = renderOpticalImage(scene, shot, view);
+    for (const [x, z] of [
+      [-lineX, -3],
+      [lineX, 5],
+    ] as const) {
+      const c = blurCircleDiameter(lens, shot.focusDistance, 30 + z) / pitch;
+      const centre = 64 + (x * scale) / pitch - 0.5;
+      const window = Math.ceil(c / 2) + 4;
+      const profile: number[] = [];
+      const first = Math.round(centre) - window;
+      for (let j = first; j <= Math.round(centre) + window; j++) profile.push(image.g[16 * 128 + j]! - 0.1);
+      const total = profile.reduce((a, b) => a + b, 0);
+      const mean = profile.reduce((a, v, i) => a + v * i, 0) / total;
+      const variance = profile.reduce((a, v, i) => a + v * (i - mean) ** 2, 0) / total;
+      expect(Math.abs(first + mean - centre)).toBeLessThan(0.2);
+      expect(Math.abs(Math.sqrt(variance) / Math.sqrt((c * c) / 16 + 1 / 12) - 1)).toBeLessThan(0.1);
     }
   });
 });
@@ -400,7 +494,7 @@ describe("water reflection (audit: Schlick and isotropic over-filtering)", () =>
     [30, 0.002],
     [60, 0.004],
   ])("matches the area average over a footprint elongated in depth (Z = %f m)", (Z, fpX) => {
-    const water = createWaterSurface(1, { kind: "cieOvercast" });
+    const water = createWaterSurface(1);
     const out: RGBA = { r: 0, g: 0, b: 0, a: 0 };
     const fpZ = fpX * Z;
     const nz = 4 * Z;
@@ -409,12 +503,12 @@ describe("water reflection (audit: Schlick and isotropic over-filtering)", () =>
     for (let i = 0; i < 300; i++) {
       const x = i * fpX;
       water.sample(x, Z, fpX, fpZ, out);
-      got.push(out.g);
+      got.push(out.a);
       let sum = 0;
       for (let a = 0; a < 4; a++) {
         for (let b = 0; b < nz; b++) {
           water.sample(x + ((a + 0.5) / 4 - 0.5) * fpX, Z + ((b + 0.5) / nz - 0.5) * fpZ, fpX / 4, fpZ / nz, out);
-          sum += out.g;
+          sum += out.a;
         }
       }
       ref.push(sum / (4 * nz));
@@ -427,12 +521,12 @@ describe("water reflection (audit: Schlick and isotropic over-filtering)", () =>
   });
 
   it("uses exact Fresnel reflectance for a flat surface", () => {
-    const water = createWaterSurface(1, { kind: "uniform", radianceFactor: 1 }, { rippleAmplitude: 0, body: [0, 0, 0] });
+    const water = createWaterSurface(1, { rippleAmplitude: 0 });
     const out: RGBA = { r: 0, g: 0, b: 0, a: 0 };
     water.sample(0, 1, 1e-3, 1e-3, out);
-    // 45° incidence on n = 1.333 (Schlick would give 0.0221).
-    expect(out.g).toBeCloseTo(fresnelReflectance(Math.SQRT1_2, WATER_REFRACTIVE_INDEX), 6);
-    expect(out.g).toBeCloseTo(0.0279, 4);
+    // 45° incidence on n = 1.333 (Schlick would give 0.0221); the surface transmits the rest.
+    expect(1 - out.a).toBeCloseTo(fresnelReflectance(Math.SQRT1_2, WATER_REFRACTIVE_INDEX), 6);
+    expect(1 - out.a).toBeCloseTo(0.0279, 4);
   });
 });
 

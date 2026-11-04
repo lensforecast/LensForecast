@@ -185,7 +185,7 @@ app.innerHTML = `
       <input data-scene="cameraHeight" type="range" min="0.2" max="5" step="0.1" value="${state.studio.cameraHeight}" /></label>
     <label>Duck speed <output data-out="subjectSpeed"></output>
       <input data-scene="subjectSpeed" type="range" min="0" max="2" step="0.05" value="${state.studio.subjectSpeed}" /></label>
-    <label class="inline"><input data-scene="showTarget" type="checkbox" checked /> Slanted-edge target</label>
+    <label class="inline"><input data-scene="showTarget" type="checkbox" ${state.studio.showTarget ? "checked" : ""} /> Test chart (slanted edge) beside the duck</label>
     <button type="button" data-action="copy">Copy A → B</button>
   </section>
   <div class="cameras">${cameraPanel("A")}${cameraPanel("B")}</div>

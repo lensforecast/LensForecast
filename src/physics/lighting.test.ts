@@ -1,10 +1,13 @@
 import { describe, expect, it } from "vitest";
 import {
   CIE_OVERCAST_VERTICAL_ILLUMINANCE_PER_ZENITH_LUMINANCE,
+  CIE_OVERCAST_WATER_ILLUMINANCE_PER_ZENITH_LUMINANCE,
   focalPlaneExposure,
   LIGHTING_PRESETS,
   sensorExposure,
   skyRadianceFactor,
+  surfaceIrradianceFactor,
+  type SkyModel,
 } from "./exposure";
 import { fresnelReflectance } from "./reflection";
 import { mm } from "./units";
@@ -47,6 +50,41 @@ describe("CIE overcast sky", () => {
       expect(luminance).toBeGreaterThanOrEqual(5000);
       expect(luminance).toBeLessThanOrEqual(10000);
     }
+  });
+});
+
+describe("irradiance on tilted surfaces (shading)", () => {
+  const overcast: SkyModel = { kind: "cieOvercast" };
+  const sun = LIGHTING_PRESETS.find((p) => p.id === "sun")!.sky;
+  const facing = { x: 0, y: 0, z: -1 };
+  const up = { x: 0, y: 1, z: 0 };
+  const down = { x: 0, y: -1, z: 0 };
+
+  it("is 1 for a surface facing the camera, by definition of the presets", () => {
+    expect(surfaceIrradianceFactor(overcast, facing)).toBeCloseTo(1, 3);
+    expect(surfaceIrradianceFactor(sun, facing)).toBeCloseTo(1, 3);
+  });
+
+  it("gives E_h / E_v under the CIE overcast sky for an upward surface", () => {
+    const ev = CIE_OVERCAST_VERTICAL_ILLUMINANCE_PER_ZENITH_LUMINANCE + CIE_OVERCAST_WATER_ILLUMINANCE_PER_ZENITH_LUMINANCE;
+    expect(surfaceIrradianceFactor(overcast, up)).toBeCloseTo((7 * Math.PI) / 9 / ev, 2);
+  });
+
+  it("lights a downward surface only by the sky mirrored in the water", () => {
+    const below = 2 * Math.PI * integrate((d) => fresnelReflectance(Math.sin(d)) * cie(d) * Math.sin(d) * Math.cos(d), 0, Math.PI / 2);
+    const ev = CIE_OVERCAST_VERTICAL_ILLUMINANCE_PER_ZENITH_LUMINANCE + CIE_OVERCAST_WATER_ILLUMINANCE_PER_ZENITH_LUMINANCE;
+    expect(surfaceIrradianceFactor(overcast, down)).toBeCloseTo(below / ev, 2);
+  });
+
+  it("adds direct sun from behind the photographer, normalized on the camera-facing surface", () => {
+    if (sun.kind !== "uniform" || sun.sunElevation === undefined) throw new Error("sun preset needs a sun");
+    const e = sun.sunElevation;
+    const skyUp = sun.radianceFactor;
+    const skyFacing = surfaceIrradianceFactor({ kind: "uniform", radianceFactor: sun.radianceFactor }, facing);
+    const k = (1 - skyFacing) / (Math.cos(e) * (1 + fresnelReflectance(Math.sin(e))));
+    expect(surfaceIrradianceFactor(sun, up)).toBeCloseTo(skyUp + k * Math.sin(e), 2);
+    const away = { x: 0, y: 0, z: 1 };
+    expect(surfaceIrradianceFactor(sun, away)).toBeCloseTo(skyFacing, 6);
   });
 });
 
