@@ -48,11 +48,15 @@ export interface FbmOptions {
  * replaced by their mean (0). The normalization covers all octaves, so
  * coarser sampling lowers contrast instead of rescaling it.
  */
+const halfGainNorms = Float64Array.from({ length: 64 }, (_, octaves) => (1 - 0.5 ** octaves) / 0.5);
+
 export function fbm(x: number, y: number, { scale, octaves, footprint, seed, gain = 0.5 }: FbmOptions): number {
   let sum = 0;
   let amplitude = 1;
   let size = scale;
-  const norm = gain === 1 ? octaves : (1 - gain ** octaves) / (1 - gain);
+  const norm = gain === 0.5 && Number.isInteger(octaves) && octaves < halfGainNorms.length
+    ? halfGainNorms[octaves]!
+    : gain === 1 ? octaves : (1 - gain ** octaves) / (1 - gain);
   for (let o = 0; o < octaves; o++) {
     const w = bandWeight(size, footprint);
     if (w === 0) break;

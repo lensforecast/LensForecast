@@ -71,14 +71,31 @@ output {
 
 .frame {
   position: relative;
+  overflow: hidden;
   background: #222;
   aspect-ratio: 3 / 2;
+  touch-action: none;
+  user-select: none;
+}
+
+.frame.can-pan {
+  cursor: grab;
+}
+
+.frame.can-zoom {
+  cursor: zoom-in;
+}
+
+.frame.is-panning {
+  cursor: grabbing;
 }
 
 .frame canvas {
+  position: absolute;
+  top: 50%;
+  left: 50%;
   display: block;
-  width: 100%;
-  height: 100%;
+  transform: translate(-50%, -50%);
 }
 
 .frame canvas.pixelated {
@@ -149,4 +166,20 @@ td.value {
   font-size: 13px;
   border-left: 4px solid #c47f00;
   background: #fff6e0;
+}
+
+.model-notes {
+  margin: 0 0 16px;
+  padding: 12px;
+  background: #fff;
+  border-radius: 8px;
+  font-size: 13px;
+}
+.model-notes details { margin: 8px 0; }
+summary { cursor: pointer; }
+.status { max-width: calc(100% - 24px); }
+.camera { min-width: 0; }
+@media (max-width: 800px) {
+  .cameras { grid-template-columns: 1fr; }
+  main { padding: 12px; }
 }

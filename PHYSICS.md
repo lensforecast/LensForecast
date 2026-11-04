@@ -90,7 +90,7 @@ Layers are blurred individually (premultiplied colour, and coverage filtered per
 
 Numerical choices (each verified by tests):
 
-- Fine grid oversampling: native-pitch views use up to 4 samples per output pixel, enough to carry every alias up to 2 cycles/pixel (higher aliases are suppressed by $\mathrm{sinc}^2 < 0.02$). The full-frame overview and previews use 2×, which under-weights aliases from above 1 cycle per output pixel (a grating at 1.3 cycles/pixel aliases with about half its true amplitude). Every camera shares the same overview pixel, so this does not bias comparisons.
+- Fine grid oversampling: native-pitch views use up to 4 samples per output pixel, enough to carry every alias up to 2 cycles/pixel (higher aliases are suppressed by $\mathrm{sinc}^2 < 0.02$). Fit, zooms of 50% and below, and previews use 2×, which under-weights aliases from above 1 cycle per output pixel (a grating at 1.3 cycles/pixel aliases with about half its true amplitude). Every camera shares the same overview pixel at Fit, so this does not bias that comparison.
 - The tent prefilter $\mathrm{sinc}^2(f h)$ of the fine grid is divided out in the system stage, so no resolution gets an artificial advantage: the same grating renders with contrast equal to diffraction × its own pixel aperture on 24 and 61 MP, within 0.5% of each other (tested).
 - Strongly defocused layers are sampled on coarser grids with ≥ 12 samples across the blur circle; the coarse sampling and bilinear upsampling transfer is replaced analytically by the fine-grid transfer.
 - FFT grids (sizes $2^k$ or $3\cdot2^k$) are padded with real scene content plus a diffraction margin of $16\lambda N_w$. The Airy pattern carries about 1% of its energy beyond that radius, so a faint wrap-around remains at the frame edges. Thin in-focus water slices are filtered periodically across the grid width when their blur fits in the margin.
@@ -107,8 +107,11 @@ The numbers beside each image use the renderer's own models: exposure with the b
 
 ### Views
 
-- **Full frame**: the whole sensor at a common 480 × 320 output size (binning varies per sensor): the fair "same print size" comparison.
-- **Detail crop**: the same sensor area around the duck's head at each sensor's native pixel pitch, displayed at equal size with visible pixels: the resolution comparison.
+Zoom is the scale of the sensor image, as in a raw viewer. 100% is one sensor pixel per screen pixel: a 24 MP frame is 6000 × 4000, a 61 MP frame 9564 × 6376. Both cameras share the percentage and the object point in view (the duck's head until you pan). Below 100%, each screen pixel bins `1/zoom` sensor pixels on a side. Above 100%, those native pixels are enlarged.
+
+- **Fit**: the whole sensor scaled into the same viewport (binning varies per sensor): the fair "same print size" comparison.
+- **100%**: a crop at each camera's own pixel pitch. The finer sensor shows a smaller piece of the scene, because its pixels are smaller.
+- Drag pans a crop. The scroll wheel steps through Fit, 12.5%, 25%, 50%, 100%, 200% and 400%, keeping the point under the cursor. Double-click toggles Fit and 100% at that point.
 - Rendering is progressive: a 4× binned preview first, then the full result, each camera in its own Web Worker.
 
 ---
@@ -306,3 +309,24 @@ At 1200 mm and 30 m, one 61 MP pixel covers about 0.09 mm of the subject; at 10 
 3. **3D wildlife studio**: progressive WebGPU path tracer with a fast approximate preview that refines to the accurate result.
 4. **Comparison UX**: equal-output-size side-by-side and split views, exposure trade-off panel, limiting-factor readout, accuracy badges.
 5. **Uploaded photographs**: EXIF extraction, monocular depth estimation (approximation), physically sound changes only.
+
+
+## Interactive rendering guarantees
+
+- Native-pixel crops select integer sensor rows and columns, including odd-sized viewports. Panning does not move the simulated sensor lattice.
+- Native overlapping crops use sensor-coordinate and colour-channel seeded noise. At a fixed sampling scale and seed the same illuminated sensor pixels keep the same noise realization. Binned views still sample aggregate Poisson noise directly; they are not sums of a stored native noisy image, so noise is not identical across different zoom scales.
+- Each camera owns a cached photograph keyed by scene, shot settings, noise and seed. Zoom, pan and viewport size are not part of that key. Navigation redraws cached canvases synchronously; missing tiles are queued after 80 ms. In-flight tiles finish when navigating, but configuration changes cancel obsolete work and clear displayed pixels.
+- Whole-frame fallbacks are rendered at 240 × 160 and 600 × 400. Detail is a sensor-anchored pyramid of 256 × 256 tiles, at native pitch for zoom ≥ 100% and power-of-two binning below it. Edge tiles may extend by less than one binned pixel beyond the sensor and are clipped by the view.
+- Displayed RGBA tiles use an LRU target of 64 MiB per camera, plus pinned visible tiles and overviews. The worker optical cache has a separate 32 MiB budget. Working FFT grids above 32 million cells are rejected before allocation; depth-layer buffers and browser/GPU canvas copies require additional memory.
+- Worker failures expose a retry control. Unchanged cameras reuse their displayed result. Model assumptions are available in the interface's expandable accuracy panel.
+
+Regression coverage: `src/render/photo.test.ts` checks cache reuse through zoom/pan, configuration invalidation, stale replies, failure/retry, eviction and pyramid geometry; `src/view.test.ts` checks sensor-grid alignment; `src/render/crop.test.ts` checks overlapping pixels/noise, adjoining wildlife tiles and oversized-grid rejection.
+
+Tiles are lossless canvas pixels rather than JPEG, avoiding compression changes to noise and fine detail. Different pyramid levels currently render binned sensor readout directly: a lower-resolution level is not the exact downsample of stored native noise. While refining, a coarser level can be visible beside completed tiles. All visible tiles must finish before judging image quality. The existing padded FFT approximation can cause small differences between independently rendered tiles; adjoining wildlife tiles are compared against a single crop in tests.
+
+
+### Render performance
+
+`npm run benchmark` (Node 22.15+) measures 600 × 400 fit and native-pixel views plus a cached ISO change. Optical images are cached per worker in a 32 MiB LRU: ISO, seed, noise enablement and scalar illuminance affect sensor readout only; scene, camera geometry, shutter, resolution and crop changes invalidate the optical key. Worker recreation discards the cache.
+
+The CPU implementation gathers FFT columns in cache-friendly blocks, specializes the unit/imaginary butterfly stages, precomputes separable frequency factors, and reuses fBm normalization constants. Sampling density and the optical models are unchanged. Representative local Node timings after these changes were 4.9 s for fit and 7.7 s for native, versus 5.6 s and 9.0 s before; cached ISO readout plus sRGB encoding took about 0.11 s. Timings vary by machine, viewport and scene, and exclude the UI refinement delay. FFT/MTF and cache-invalidation tests cover these paths.

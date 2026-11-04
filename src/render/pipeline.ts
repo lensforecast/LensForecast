@@ -48,6 +48,8 @@ export interface OpticalImage {
   r: Float64Array;
   g: Float64Array;
   b: Float64Array;
+  /** Sensor coordinates of the first output pixel centre, for crop-stable noise. */
+  origin?: { x: number; y: number };
   sensorPitch: number;
   outputPixelSize: number;
   /** Sensor pixels combined into one output pixel: (outputPixelSize / pitch)². */
@@ -224,15 +226,17 @@ function filterPatch(
   const z2i = new Float64Array(size);
   const z3r = new Float64Array(size);
   const z3i = new Float64Array(size);
+  const frequencyX = Float64Array.from({ length: lx }, (_, u) => spatialFrequency(u, lx, cell));
+  const compensationX = frequencyX.map((fx) => coarseCompensation(fx, h, cell, q));
   for (let v = 0; v < ly; v++) {
     // Rows run downward while image y runs upward.
     const fy = -spatialFrequency(v, ly, cell);
     const mv = (ly - v) % ly;
     const compY = coarseCompensation(fy, h, cell, q);
     for (let u = 0; u < lx; u++) {
-      const fx = spatialFrequency(u, lx, cell);
+      const fx = frequencyX[u]!;
       const common =
-        evenLineOtf(blur.motionX, blur.motionY, fx, fy, u === lx / 2, v === ly / 2) * coarseCompensation(fx, h, cell, q) * compY;
+        evenLineOtf(blur.motionX, blur.motionY, fx, fy, u === lx / 2, v === ly / 2) * compensationX[u]! * compY;
       let hr = common;
       let hg = common;
       let hb = common;
@@ -1003,14 +1007,16 @@ function applySystemOtf(grid: FineGrid, workingN: number, outputPixelSize: numbe
 
   const zr = new Float64Array(size);
   const zi = new Float64Array(size);
+  const frequencyX = Float64Array.from({ length: gx }, (_, u) => spatialFrequency(u, gx, h));
+  const pixelX = frequencyX.map((fx) => boxOtf(outputPixelSize, fx) / sincPi(fx * h) ** 2);
   for (let v = 0; v < gy; v++) {
     const fy = spatialFrequency(v, gy, h);
     const mv = (gy - v) % gy;
     const pixelY = boxOtf(outputPixelSize, fy) / sincPi(fy * h) ** 2;
     for (let u = 0; u < gx; u++) {
-      const fx = spatialFrequency(u, gx, h);
+      const fx = frequencyX[u]!;
       const rho = Math.hypot(fx, fy);
-      const pixel = (boxOtf(outputPixelSize, fx) / sincPi(fx * h) ** 2) * pixelY;
+      const pixel = pixelX[u]! * pixelY;
       const hr = lookup(tables.channels[0], tables.step, rho) * pixel;
       const hg = lookup(tables.channels[1], tables.step, rho) * pixel;
       const hb = lookup(tables.channels[2], tables.step, rho) * pixel;
@@ -1077,6 +1083,10 @@ export function renderOpticalImage(
   const margin = Math.ceil((DIFFRACTION_MARGIN * LONGEST_WAVELENGTH * optics.workingFNumber + 2 * P) / h) + 2;
   const gx = nextFftSize(nx * os + 2 * margin);
   const gy = nextFftSize(ny * os + 2 * margin);
+  // Reject oversized working grids before allocating their many FFT buffers.
+  if (!Number.isFinite(gx * gy) || gx * gy > 32_000_000) {
+    throw new RangeError("This view is too large to render. Increase zoom or reduce the window size.");
+  }
   const mx = Math.floor((gx - (nx - 1) * os) / 2);
   const my = Math.floor((gy - (ny - 1) * os) / 2);
   const xFirst = view.centerX - (nx * P) / 2 + P / 2;
@@ -1150,6 +1160,7 @@ export function renderOpticalImage(
     r,
     g,
     b,
+    origin: { x: xFirst, y: yFirst },
     sensorPitch: pitch,
     outputPixelSize: P,
     binning: (P / pitch) ** 2,
@@ -1163,6 +1174,13 @@ export interface ReadoutOptions {
   sensor?: SensorModel;
 }
 
+function pixelSeed(seed: number, x: number, y: number, channel: number): number {
+  let h = seed ^ Math.imul(x, 0x9e3779b1) ^ Math.imul(y, 0x85ebca77) ^ Math.imul(channel + 1, 0xc2b2ae3d);
+  h = Math.imul(h ^ (h >>> 16), 0x7feb352d);
+  h = Math.imul(h ^ (h >>> 15), 0x846ca68b);
+  return (h ^ (h >>> 16)) >>> 0;
+}
+
 /**
  * Converts radiance factors to normalized output levels (0–1, linear):
  * exposure → photoelectrons → Poisson shot noise → full-well clip → read
@@ -1171,7 +1189,7 @@ export interface ReadoutOptions {
  */
 export function readOut(image: OpticalImage, shot: ShotSettings, options: ReadoutOptions = {}): Float32Array {
   const { noise = true, seed = 1, sensor = GENERIC_SENSOR } = options;
-  const rng = mulberry32(seed);
+  const sequentialRng = mulberry32(seed);
   const pitch = image.sensorPitch;
   const k = image.binning;
   const unitExposure = sensorExposure(shot.illuminance / Math.PI, shot.focalLength, shot.fNumber, shot.focusDistance, shot.shutterTime);
@@ -1184,7 +1202,12 @@ export function readOut(image: OpticalImage, shot: ShotSettings, options: Readou
   const out = new Float32Array(count * 3);
   const channels = [image.r, image.g, image.b];
   for (let i = 0; i < count; i++) {
+    // Quantize coordinates to 1/1024 sensor pixel to absorb floating-point
+    // differences between equivalent crop origins. Channels get independent streams.
+    const x = image.origin ? Math.round((image.origin.x + (i % image.width) * image.outputPixelSize) / pitch * 1024) : 0;
+    const y = image.origin ? Math.round((image.origin.y - Math.floor(i / image.width) * image.outputPixelSize) / pitch * 1024) : 0;
     for (let c = 0; c < 3; c++) {
+      const rng = image.origin ? mulberry32(pixelSeed(seed, x, y, c)) : sequentialRng;
       const mean = Math.max(channels[c]![i]!, 0) * electronsPerFactor;
       let electrons: number;
       if (noise) {

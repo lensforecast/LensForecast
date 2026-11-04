@@ -12,23 +12,20 @@ import {
   um,
 } from "./physics";
 import { computeReadouts } from "./readouts";
-import type { RenderRequest, RenderResponse } from "./render/protocol";
+import { Photo } from "./render/photo";
 import { DEFAULT_STUDIO, DUCK_HEAD_OFFSET, type StudioOptions } from "./render/studio";
-import type { ShotSettings, ViewSpec } from "./render/types";
+import type { ShotSettings } from "./render/types";
+import { frameView, type FramedView, type ZoomSetting } from "./view";
 
 const APERTURES = [2.8, 4, 5.6, 8, 11, 16];
 const SHUTTERS = [1 / 4000, 1 / 2000, 1 / 1000, 1 / 500, 1 / 250, 1 / 125, 1 / 60, 1 / 30, 1 / 15];
 const ISOS = [100, 200, 400, 800, 1600, 3200, 6400, 12800, 25600];
-const FULL_VIEW = { width: 480, height: 320 };
-const DETAIL_VIEW = { width: 448, height: 296 };
-const PREVIEW_BINNING = 4;
-/** Overview renders carry aliasing only up to 1 cycle per output pixel; detail crops use the adaptive default. */
-const OVERVIEW_OVERSAMPLE = 2;
+/** Lightroom stops. 100% is one sensor pixel per screen pixel. */
+const ZOOM_LEVELS: readonly ZoomSetting[] = ["fit", 0.125, 0.25, 0.5, 1, 2, 4];
 const CIRCLE_OF_CONFUSION = um(30);
 const NOISE_SEED = 1;
 
 type Side = "A" | "B";
-type ViewMode = "full" | "detail";
 
 interface CameraConfig {
   focalMm: number;
@@ -46,7 +43,9 @@ const state = {
   studio: { ...DEFAULT_STUDIO, sky: lightingOf("overcast").sky } as StudioOptions,
   backgroundOffset: DEFAULT_STUDIO.backgroundDistance - DEFAULT_STUDIO.subjectDistance,
   lightingId: "overcast",
-  mode: "full" as ViewMode,
+  zoom: "fit" as ZoomSetting,
+  /** Object point kept under the zoom, meters from the aim point. */
+  lookAt: { x: DUCK_HEAD_OFFSET.x, y: DUCK_HEAD_OFFSET.y },
   noise: true,
   cameras: {
     A: { focalMm: 600, fNumber: 5.6, focusOnSubject: true, focusDistance: 30, shutterTime: 1 / 500, iso: 800, resolutionId: "24mp" },
@@ -70,67 +69,45 @@ function shotFor(camera: CameraConfig): ShotSettings {
   };
 }
 
-/** Full frame: whole sensor at a common output size. Detail: same sensor region, native pixels. */
-function viewsFor(camera: CameraConfig): ViewSpec[] {
-  const pitch = pixelPitch(FULL_FRAME, resolutionOf(camera));
-  let base: ViewSpec;
-  if (state.mode === "full") {
-    base = {
-      centerX: 0,
-      centerY: 0,
-      width: FULL_FRAME.width,
-      height: FULL_FRAME.height,
-      outputPixelSize: FULL_FRAME.width / FULL_VIEW.width,
-      oversample: OVERVIEW_OVERSAMPLE,
-    };
-  } else {
-    const finest = Math.min(...(["A", "B"] as const).map((s) => pixelPitch(FULL_FRAME, resolutionOf(state.cameras[s]))));
-    const shot = shotFor(camera);
-    const scale = imageDistance(shot.focalLength, shot.focusDistance) / state.studio.subjectDistance;
-    base = {
-      centerX: DUCK_HEAD_OFFSET.x * scale,
-      centerY: DUCK_HEAD_OFFSET.y * scale,
-      width: DETAIL_VIEW.width * finest,
-      height: DETAIL_VIEW.height * finest,
-      outputPixelSize: pitch,
-    };
-  }
-  const preview = { ...base, outputPixelSize: Math.max(base.outputPixelSize, pitch) * PREVIEW_BINNING, oversample: OVERVIEW_OVERSAMPLE };
-  return [preview, base];
+function subjectScale(camera: CameraConfig): number {
+  const shot = shotFor(camera);
+  return imageDistance(shot.focalLength, shot.focusDistance) / state.studio.subjectDistance;
 }
 
-class RenderChannel {
-  private readonly worker = new Worker(new URL("./render/worker.ts", import.meta.url), { type: "module" });
-  private queue: { generation: number; final: boolean; request: Omit<RenderRequest, "id"> }[] = [];
-  private inFlight: { generation: number; final: boolean } | null = null;
-  private generation = 0;
-  private shown = -1;
+/** Both cameras share camera A's viewport so a zoom percentage is the same size on screen. */
+function viewportDevicePixels(): { width: number; height: number } {
+  const frame = panels.A.querySelector(".frame")!;
+  const dpr = window.devicePixelRatio || 1;
+  return {
+    width: Math.max(1, Math.round(frame.clientWidth * dpr)),
+    height: Math.max(1, Math.round(frame.clientHeight * dpr)),
+  };
+}
 
-  constructor(private readonly onImage: (response: RenderResponse, final: boolean) => void) {
-    this.worker.onmessage = (event: MessageEvent<RenderResponse>) => {
-      const job = this.inFlight!;
-      this.inFlight = null;
-      if (job.generation >= this.shown) {
-        this.shown = job.generation;
-        this.onImage(event.data, job.final && job.generation === this.generation);
-      }
-      this.pump();
-    };
-  }
+function framedFor(camera: CameraConfig): FramedView {
+  const resolution = resolutionOf(camera);
+  const viewport = viewportDevicePixels();
+  const scale = subjectScale(camera);
+  return frameView({
+    zoom: state.zoom,
+    viewportWidth: viewport.width,
+    viewportHeight: viewport.height,
+    pixelsX: resolution.pixelsX,
+    pixelsY: resolution.pixelsY,
+    sensorWidth: FULL_FRAME.width,
+    sensorHeight: FULL_FRAME.height,
+    centerX: state.lookAt.x * scale,
+    centerY: state.lookAt.y * scale,
+  });
+}
 
-  schedule(requests: Omit<RenderRequest, "id">[]): void {
-    this.generation++;
-    this.queue = requests.map((request, i) => ({ generation: this.generation, final: i === requests.length - 1, request }));
-    this.pump();
-  }
+function formatPercent(zoom: number): string {
+  const rounded = Math.round(zoom * 1000) / 10;
+  return `${Number(rounded.toFixed(1))}%`;
+}
 
-  private pump(): void {
-    if (this.inFlight) return;
-    const job = this.queue.shift();
-    if (!job) return;
-    this.inFlight = job;
-    this.worker.postMessage({ ...job.request, id: job.generation });
-  }
+function zoomLabel(framed: FramedView): string {
+  return state.zoom === "fit" ? `Fit ${formatPercent(framed.zoom)}` : formatPercent(framed.zoom);
 }
 
 const tier = (id: EffectId): string => {
@@ -150,7 +127,7 @@ function cameraPanel(side: Side): string {
   return `
     <section class="camera" data-side="${side}">
       <h2>Camera ${side}</h2>
-      <div class="frame"><canvas></canvas><span class="status"></span></div>
+      <div class="frame" title="Drag to pan. Scroll to zoom. Double-click toggles 100%."><canvas></canvas><span class="status"></span></div>
       <div class="controls">
         <label>Focal length <output data-out="focalMm"></output>
           <input data-key="focalMm" type="range" min="100" max="1200" step="10" value="${c.focalMm}" /></label>
@@ -162,6 +139,7 @@ function cameraPanel(side: Side): string {
         <label>Focus distance <output data-out="focusDistance"></output>
           <input data-key="focusDistance" type="range" min="3" max="200" step="0.5" value="${c.focusDistance}" /></label>
       </div>
+      <button type="button" data-action="retry" hidden>Retry render</button>
       <div class="warning-slot"></div>
       <table class="readout"></table>
     </section>`;
@@ -170,10 +148,9 @@ function cameraPanel(side: Side): string {
 const app = document.querySelector<HTMLDivElement>("#app")!;
 app.innerHTML = `
   <section class="scene-controls">
-    <label>View
-      <select data-scene="mode">
-        <option value="full">Full frame</option>
-        <option value="detail">Detail crop (native pixels)</option>
+    <label>Zoom
+      <select data-scene="zoom" title="100% is one sensor pixel per screen pixel. A 24 MP frame is 6000 × 4000 pixels. Drag a zoomed view to pan; scroll or double-click to change zoom.">
+        ${ZOOM_LEVELS.map((z) => `<option value="${z}" ${z === state.zoom ? "selected" : ""}>${z === "fit" ? "Fit" : formatPercent(z)}</option>`).join("")}
       </select></label>
     <label class="inline"><input data-scene="noise" type="checkbox" checked /> Sensor noise</label>
     <label>Lighting <select data-scene="lighting">${LIGHTING_PRESETS.map((p) => `<option value="${p.id}" ${p.id === state.lightingId ? "selected" : ""}>${p.name} (${p.illuminance.toLocaleString()} lx)</option>`).join("")}</select></label>
@@ -188,6 +165,10 @@ app.innerHTML = `
     <label class="inline"><input data-scene="showTarget" type="checkbox" ${state.studio.showTarget ? "checked" : ""} /> Test chart (slanted edge) beside the duck</label>
     <button type="button" data-action="copy">Copy A → B</button>
   </section>
+  <details class="model-notes"><summary>Model accuracy and assumptions</summary>
+    <p>These cameras use ideal lenses and a generic sensor. Color sampling omits Bayer filters and demosaicing. Highlight clipping is applied after binning, so near-clipped detail can differ from a real sensor.</p>
+    ${Object.values(EFFECT_MODELS).map((model) => `<details><summary>${model.name} · ${model.tier}</summary><p>${model.model}</p><ul>${model.assumptions.map((assumption) => `<li>${assumption}</li>`).join("")}</ul></details>`).join("")}
+  </details>
   <div class="cameras">${cameraPanel("A")}${cameraPanel("B")}</div>
 `;
 
@@ -195,29 +176,76 @@ const panels = Object.fromEntries(
   (["A", "B"] as const).map((side) => [side, app.querySelector<HTMLElement>(`.camera[data-side="${side}"]`)!]),
 ) as Record<Side, HTMLElement>;
 
-function drawImage(side: Side, response: RenderResponse, final: boolean): void {
-  const panel = panels[side];
-  const canvas = panel.querySelector("canvas")!;
-  canvas.width = response.width;
-  canvas.height = response.height;
-  canvas.classList.toggle("pixelated", state.mode === "detail" && final);
-  canvas.getContext("2d")!.putImageData(new ImageData(response.pixels, response.width, response.height), 0, 0);
-  const status = panel.querySelector(".status")!;
-  status.textContent = final
-    ? `${response.width} × ${response.height} px · ${response.binning > 1.01 ? `${response.binning.toFixed(1)} sensor px per output px · ` : ""}${response.elapsedMs.toFixed(0)} ms`
-    : "Refining…";
+/** Cached photograph pixels are transformed on the UI thread, without optics work. */
+function paintPhoto(side: Side): void {
+  const photo = photos[side];
+  const frame = framedFor(state.cameras[side]);
+  const canvas = panels[side].querySelector("canvas")!;
+  const dpr = window.devicePixelRatio || 1;
+  const width = Math.max(1, Math.round(frame.displayWidth));
+  const height = Math.max(1, Math.round(frame.displayHeight));
+  if (canvas.width !== width) canvas.width = width;
+  if (canvas.height !== height) canvas.height = height;
+  canvas.style.width = `${frame.displayWidth / dpr}px`;
+  canvas.style.height = `${frame.displayHeight / dpr}px`;
+  const ctx = canvas.getContext("2d")!;
+  ctx.clearRect(0, 0, width, height);
+  ctx.imageSmoothingEnabled = frame.zoom < 1;
+  const left = frame.centerX - frame.width / 2;
+  const top = frame.centerY + frame.height / 2;
+  for (const tile of photo.images) {
+    const view = tile.view;
+    const x = (view.centerX - view.width / 2 - left) / frame.width * width;
+    const y = (top - view.centerY - view.height / 2) / frame.height * height;
+    const w = view.width / frame.width * width;
+    const h = view.height / frame.height * height;
+    if (x + w <= 0 || y + h <= 0 || x >= width || y >= height) continue;
+    ctx.drawImage(tile.source, x, y, w, h);
+  }
+  const { ready, total } = photo.progress;
+  panels[side].querySelector<HTMLButtonElement>('[data-action="retry"]')!.hidden = !photo.errorMessage;
+  if (photo.errorMessage) {
+    panels[side].querySelector(".status")!.textContent = `Render failed: ${photo.errorMessage}`;
+    return;
+  }
+  const status = ready === total ? "Cached photo" : `Refining ${ready}/${total}`;
+  panels[side].querySelector(".status")!.textContent = `${zoomLabel(frame)} · ${status}`;
 }
 
-const channels = Object.fromEntries(
-  (["A", "B"] as const).map((side) => [side, new RenderChannel((res, final) => drawImage(side, res, final))]),
-) as Record<Side, RenderChannel>;
+const photos = Object.fromEntries(
+  (["A", "B"] as const).map((side) => [side, new Photo<HTMLCanvasElement>(
+    () => new Worker(new URL("./render/worker.ts", import.meta.url), { type: "module" }),
+    (response) => {
+      const canvas = document.createElement("canvas");
+      canvas.width = response.width;
+      canvas.height = response.height;
+      canvas.getContext("2d")!.putImageData(new ImageData(response.pixels, response.width, response.height), 0, 0);
+      return canvas;
+    },
+    (canvas) => { canvas.width = canvas.height = 0; },
+    () => paintPhoto(side),
+    (message) => {
+      panels[side].querySelector(".status")!.textContent = `Render failed: ${message}`;
+      panels[side].querySelector<HTMLButtonElement>('[data-action="retry"]')!.hidden = false;
+    },
+  )]),
+) as Record<Side, Photo<HTMLCanvasElement>>;
+
+app.addEventListener("click", (event) => {
+  const button = event.target instanceof Element ? event.target.closest('[data-action="retry"]') : null;
+  const side = sideOf(button);
+  if (side) {
+    panels[side].querySelector<HTMLButtonElement>('[data-action="retry"]')!.hidden = true;
+    photos[side].retry();
+  }
+});
 
 function updateReadout(side: Side): void {
   const camera = state.cameras[side];
   const panel = panels[side];
   const shot = shotFor(camera);
-  const displayPixel = state.mode === "full" ? FULL_FRAME.width / FULL_VIEW.width : 0;
-  const r = computeReadouts(shot, state.studio, { displayPixel, circleOfConfusion: CIRCLE_OF_CONFUSION });
+  const framed = framedFor(camera);
+  const r = computeReadouts(shot, state.studio, { displayPixel: framed.displayPixel, circleOfConfusion: CIRCLE_OF_CONFUSION });
   const pitch = r.pixelPitch;
 
   panel.querySelector('[data-out="focalMm"]')!.textContent = `${camera.focalMm} mm`;
@@ -237,7 +265,7 @@ function updateReadout(side: Side): void {
   }
   panel.querySelector(".warning-slot")!.innerHTML = warnings.join("");
 
-  const sharpnessScale = state.mode === "full" ? "full-frame view" : "native pixels";
+  const sharpnessScale = state.zoom === "fit" ? "fit" : formatPercent(state.zoom);
   panel.querySelector(".readout")!.innerHTML = [
     row("Horizontal field of view", `${radToDeg(r.fieldOfView).toFixed(2)}°`, "fieldOfView"),
     row("Depth of field", Number.isFinite(r.depthOfField) ? `${(r.depthOfField * 100).toFixed(1)} cm` : "to infinity", "defocus"),
@@ -252,32 +280,37 @@ function updateReadout(side: Side): void {
   ].join("");
 }
 
-let renderTimer = 0;
+function updateFrameChrome(): void {
+  for (const side of ["A", "B"] as const) {
+    const frame = panels[side].querySelector(".frame")!;
+    const cropped = framedFor(state.cameras[side]).cropped;
+    frame.classList.toggle("can-pan", cropped);
+    frame.classList.toggle("can-zoom", !cropped);
+  }
+}
+
 function refresh(): void {
   state.studio.backgroundDistance = state.studio.subjectDistance + state.backgroundOffset;
+  updateFrameChrome();
   app.querySelector('[data-out="subjectDistance"]')!.textContent = `${state.studio.subjectDistance} m`;
   app.querySelector('[data-out="backgroundOffset"]')!.textContent = `+${state.backgroundOffset} m (${state.studio.backgroundDistance} m)`;
   app.querySelector('[data-out="cameraHeight"]')!.textContent = `${state.studio.cameraHeight.toFixed(1)} m`;
   app.querySelector('[data-out="subjectSpeed"]')!.textContent = `${state.studio.subjectSpeed.toFixed(2)} m/s`;
   for (const side of ["A", "B"] as const) updateReadout(side);
 
-  window.clearTimeout(renderTimer);
-  renderTimer = window.setTimeout(() => {
-    for (const side of ["A", "B"] as const) {
-      const camera = state.cameras[side];
-      const shot = shotFor(camera);
-      channels[side].schedule(
-        viewsFor(camera).map((view) => ({ studio: { ...state.studio }, shot, view, noise: state.noise, seed: NOISE_SEED })),
-      );
-    }
-  }, 120);
+  for (const side of ["A", "B"] as const) {
+    const camera = state.cameras[side];
+    const shot = shotFor(camera);
+    const framed = framedFor(camera);
+    photos[side].setView({ studio: { ...state.studio }, shot, noise: state.noise, seed: NOISE_SEED }, framed);
+  }
 }
 
 app.addEventListener("input", (event) => {
   const target = event.target as HTMLInputElement | HTMLSelectElement;
   const sceneKey = target.dataset.scene;
   if (sceneKey) {
-    if (sceneKey === "mode") state.mode = target.value as ViewMode;
+    if (sceneKey === "zoom") state.zoom = target.value === "fit" ? "fit" : Number(target.value);
     else if (sceneKey === "noise") state.noise = (target as HTMLInputElement).checked;
     else if (sceneKey === "lighting") {
       state.lightingId = target.value;
@@ -304,5 +337,153 @@ app.querySelector('[data-action="copy"]')!.addEventListener("click", () => {
   panels.B = app.querySelector<HTMLElement>('.camera[data-side="B"]')!;
   refresh();
 });
+
+function sideOf(target: EventTarget | null): Side | null {
+  const side = target instanceof Element ? target.closest<HTMLElement>(".camera")?.dataset.side : undefined;
+  return side === "A" || side === "B" ? side : null;
+}
+
+function pointerOnSensor(side: Side, clientX: number, clientY: number): { x: number; y: number; u: number; v: number } | null {
+  const canvas = panels[side].querySelector("canvas");
+  if (!canvas) return null;
+  const rect = canvas.getBoundingClientRect();
+  if (rect.width < 1 || clientX < rect.left || clientX > rect.right || clientY < rect.top || clientY > rect.bottom) return null;
+  const u = (clientX - rect.left) / rect.width - 0.5;
+  const v = 0.5 - (clientY - rect.top) / rect.height;
+  const framed = framedFor(state.cameras[side]);
+  return { x: framed.centerX + u * framed.width, y: framed.centerY + v * framed.height, u, v };
+}
+
+/** Keep the sensor point under the cursor when the magnification changes. */
+function placeZoom(side: Side, zoom: number, pointer: { x: number; y: number; u: number; v: number }): void {
+  const camera = state.cameras[side];
+  const resolution = resolutionOf(camera);
+  const viewport = viewportDevicePixels();
+  const predicted = frameView({
+    zoom,
+    viewportWidth: viewport.width,
+    viewportHeight: viewport.height,
+    pixelsX: resolution.pixelsX,
+    pixelsY: resolution.pixelsY,
+    sensorWidth: FULL_FRAME.width,
+    sensorHeight: FULL_FRAME.height,
+    centerX: pointer.x,
+    centerY: pointer.y,
+  });
+  const scale = subjectScale(camera);
+  state.lookAt.x = (pointer.x - pointer.u * predicted.width) / scale;
+  state.lookAt.y = (pointer.y - pointer.v * predicted.height) / scale;
+}
+
+function stepZoom(direction: 1 | -1, effective: number, fitZoom: number): ZoomSetting {
+  const stops = ZOOM_LEVELS.filter((zoom): zoom is number => typeof zoom === "number");
+  if (direction > 0) return stops.find((zoom) => zoom > effective * 1.01) ?? stops[stops.length - 1]!;
+  const current = state.zoom;
+  if (current === "fit") return "fit";
+  return [...stops].reverse().find((zoom) => zoom < current * 0.99 && zoom > fitZoom * 1.01) ?? "fit";
+}
+
+function syncZoomSelect(): void {
+  const select = app.querySelector<HTMLSelectElement>('[data-scene="zoom"]');
+  if (select) select.value = String(state.zoom);
+}
+
+let pan: { id: number; x: number; y: number; side: Side } | null = null;
+
+app.addEventListener("pointerdown", (event) => {
+  if (event.button !== 0) return;
+  const frame = event.target instanceof Element ? event.target.closest<HTMLElement>(".frame") : null;
+  const side = sideOf(frame);
+  if (!frame || !side || !framedFor(state.cameras[side]).cropped) return;
+  pan = { id: event.pointerId, x: event.clientX, y: event.clientY, side };
+  frame.classList.add("is-panning");
+  frame.setPointerCapture(event.pointerId);
+  event.preventDefault();
+});
+
+function endPan(event: PointerEvent): void {
+  if (!pan || event.pointerId !== pan.id) return;
+  for (const frame of app.querySelectorAll(".frame.is-panning")) frame.classList.remove("is-panning");
+  pan = null;
+}
+
+app.addEventListener("pointerup", endPan);
+app.addEventListener("pointercancel", endPan);
+
+app.addEventListener("pointermove", (event) => {
+  if (!pan || event.pointerId !== pan.id) return;
+  const dx = event.clientX - pan.x;
+  const dy = event.clientY - pan.y;
+  if (dx === 0 && dy === 0) return;
+  pan.x = event.clientX;
+  pan.y = event.clientY;
+  const camera = state.cameras[pan.side];
+  const framed = framedFor(camera);
+  const metersPerCss = (pixelPitch(FULL_FRAME, resolutionOf(camera)) * (window.devicePixelRatio || 1)) / framed.zoom;
+  const scale = subjectScale(camera);
+  state.lookAt.x -= (dx * metersPerCss) / scale;
+  state.lookAt.y += (dy * metersPerCss) / scale;
+  const clamped = framedFor(camera);
+  const maxX = Math.max(0, (FULL_FRAME.width - clamped.width) / 2) / scale;
+  const maxY = Math.max(0, (FULL_FRAME.height - clamped.height) / 2) / scale;
+  state.lookAt.x = Math.min(Math.max(state.lookAt.x, -maxX), maxX);
+  state.lookAt.y = Math.min(Math.max(state.lookAt.y, -maxY), maxY);
+  refresh();
+});
+
+app.addEventListener("dblclick", (event) => {
+  const frame = event.target instanceof Element ? event.target.closest(".frame") : null;
+  const side = sideOf(frame);
+  if (!side) return;
+  event.preventDefault();
+  const atNative = typeof state.zoom === "number" && Math.abs(state.zoom - 1) < 1e-6;
+  if (atNative) state.zoom = "fit";
+  else {
+    const pointer = pointerOnSensor(side, event.clientX, event.clientY);
+    if (pointer) placeZoom(side, 1, pointer);
+    state.zoom = 1;
+  }
+  syncZoomSelect();
+  refresh();
+});
+
+let lastWheel = 0;
+app.addEventListener(
+  "wheel",
+  (event) => {
+    const frame = event.target instanceof Element ? event.target.closest(".frame") : null;
+    const side = sideOf(frame);
+    if (!side) return;
+    event.preventDefault();
+    const now = performance.now();
+    if (now - lastWheel < 160) return;
+    lastWheel = now;
+    const camera = state.cameras[side];
+    const viewport = viewportDevicePixels();
+    const fitZoom = frameView({
+      zoom: "fit",
+      viewportWidth: viewport.width,
+      viewportHeight: viewport.height,
+      pixelsX: resolutionOf(camera).pixelsX,
+      pixelsY: resolutionOf(camera).pixelsY,
+      sensorWidth: FULL_FRAME.width,
+      sensorHeight: FULL_FRAME.height,
+      centerX: 0,
+      centerY: 0,
+    }).zoom;
+    const next = stepZoom(event.deltaY < 0 ? 1 : -1, framedFor(camera).zoom, fitZoom);
+    if (next === state.zoom) return;
+    if (typeof next === "number") {
+      const pointer = pointerOnSensor(side, event.clientX, event.clientY);
+      if (pointer) placeZoom(side, next, pointer);
+    }
+    state.zoom = next;
+    syncZoomSelect();
+    refresh();
+  },
+  { passive: false },
+);
+
+new ResizeObserver(() => refresh()).observe(panels.A.querySelector(".frame")!);
 
 refresh();

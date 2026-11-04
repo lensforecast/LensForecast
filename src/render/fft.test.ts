@@ -22,7 +22,7 @@ function naiveDft(re: number[], im: number[]): [number[], number[]] {
 }
 
 describe("FFT", () => {
-  it.each([16, 3, 12, 48])("matches a naive DFT and inverts exactly (n = %i)", (n) => {
+  it.each([1, 2, 4, 8, 16, 3, 6, 12, 48])("matches a naive DFT and inverts exactly (n = %i)", (n) => {
     const rng = mulberry32(3);
     const re = Array.from({ length: n }, rng);
     const im = Array.from({ length: n }, rng);
@@ -59,10 +59,8 @@ describe("FFT", () => {
     for (let i = 2 * w; i < 10 * w; i++) expect(reB[i]).toBeCloseTo(reA[i]!, 12);
   });
 
-  it("round-trips in 2D", () => {
+  it.each([[32, 8], [24, 12], [3, 4]])("round-trips in 2D (%i × %i)", (w, h) => {
     const rng = mulberry32(5);
-    const w = 32;
-    const h = 8;
     const original = Float64Array.from({ length: w * h }, rng);
     const re = original.slice();
     const im = new Float64Array(w * h);

@@ -140,7 +140,26 @@ function fftPow2(re: Float64Array, im: Float64Array, inverse: boolean): void {
     }
   }
   const sign = inverse ? 1 : -1;
-  for (let size = 2; size <= n; size <<= 1) {
+  // The first two butterfly stages have only unit or ±i twiddles.
+  // Avoid table lookups and complex multiplies for half the small stages.
+  for (let a = 0; a < n; a += 2) {
+    const ar = re[a]!; const ai = im[a]!;
+    const br = re[a + 1]!; const bi = im[a + 1]!;
+    re[a] = ar + br; im[a] = ai + bi;
+    re[a + 1] = ar - br; im[a + 1] = ai - bi;
+  }
+  for (let a = 0; a < n; a += 4) {
+    if (n < 4) break;
+    const ar = re[a]!; const ai = im[a]!;
+    const br = re[a + 2]!; const bi = im[a + 2]!;
+    re[a] = ar + br; im[a] = ai + bi;
+    re[a + 2] = ar - br; im[a + 2] = ai - bi;
+    const cr = re[a + 1]!; const ci = im[a + 1]!;
+    const dr = -sign * im[a + 3]!; const di = sign * re[a + 3]!;
+    re[a + 1] = cr + dr; im[a + 1] = ci + di;
+    re[a + 3] = cr - dr; im[a + 3] = ci - di;
+  }
+  for (let size = 8; size <= n; size <<= 1) {
     const half = size >>> 1;
     const step = n / size;
     for (let start = 0; start < n; start += size) {
@@ -190,17 +209,30 @@ export function fft2d(
     }
   };
   if (!inverse) rowPass();
-  const colRe = new Float64Array(height);
-  const colIm = new Float64Array(height);
-  for (let col = 0; col < width; col++) {
+  // Gather a small block of columns at once. Reading one whole strided
+  // column repeatedly evicts adjacent cache lines on large image grids.
+  const block = Math.min(16, width);
+  const stride = height + 1; // Avoid power-of-two cache-set conflicts in scratch.
+  const colRe = new Float64Array(stride * block);
+  const colIm = new Float64Array(stride * block);
+  for (let firstCol = 0; firstCol < width; firstCol += block) {
+    const count = Math.min(block, width - firstCol);
     for (let row = 0; row < height; row++) {
-      colRe[row] = re[row * width + col]!;
-      colIm[row] = im[row * width + col]!;
+      const offset = row * width + firstCol;
+      for (let c = 0; c < count; c++) {
+        colRe[c * stride + row] = re[offset + c]!;
+        colIm[c * stride + row] = im[offset + c]!;
+      }
     }
-    fft1d(colRe, colIm, inverse);
+    for (let c = 0; c < count; c++) {
+      fft1d(colRe.subarray(c * stride, c * stride + height), colIm.subarray(c * stride, c * stride + height), inverse);
+    }
     for (let row = 0; row < height; row++) {
-      re[row * width + col] = colRe[row]!;
-      im[row * width + col] = colIm[row]!;
+      const offset = row * width + firstCol;
+      for (let c = 0; c < count; c++) {
+        re[offset + c] = colRe[c * stride + row]!;
+        im[offset + c] = colIm[c * stride + row]!;
+      }
     }
   }
   if (inverse) rowPass();
