@@ -7,7 +7,7 @@ import type { RenderReply, RenderRequest } from "./protocol";
 import { DEFAULT_STUDIO } from "./studio";
 import { baseShot } from "./testScenes";
 
-const config: PhotoConfig = { studio: DEFAULT_STUDIO, shot: { ...baseShot, resolution: RESOLUTION_PRESETS[2]! }, noise: true, seed: 1 };
+const config: PhotoConfig = { studio: DEFAULT_STUDIO, shot: { ...baseShot, resolution: RESOLUTION_PRESETS[3]! }, noise: true, seed: 1 };
 const frame = (zoom: number | "fit", x = 0, y = 0) => frameView({ zoom, viewportWidth: 600, viewportHeight: 400, centerX: x, centerY: y, pixelsX: 9564, pixelsY: 6376, sensorWidth: 0.036, sensorHeight: 0.024 });
 class FakeWorker implements RenderWorker {
   onmessage: RenderWorker["onmessage"] = null;

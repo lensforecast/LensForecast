@@ -30,7 +30,8 @@ label {
   font-size: 13px;
 }
 
-label select {
+label select,
+label input[type="range"] {
   width: 100%;
   min-width: 0;
 }

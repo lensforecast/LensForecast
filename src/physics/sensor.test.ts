@@ -16,7 +16,8 @@ import {
 } from "./sensor";
 import { toUm } from "./units";
 
-const [res24, res33, res61] = RESOLUTION_PRESETS as [
+const [res24, res33, res45, res61] = RESOLUTION_PRESETS as [
+  (typeof RESOLUTION_PRESETS)[number],
   (typeof RESOLUTION_PRESETS)[number],
   (typeof RESOLUTION_PRESETS)[number],
   (typeof RESOLUTION_PRESETS)[number],
@@ -29,11 +30,13 @@ describe("geometry", () => {
   it("derives pixel pitch from format width", () => {
     expect(toUm(pitch24)).toBeCloseTo(6.0, 6);
     expect(toUm(pixelPitch(FULL_FRAME, res33))).toBeCloseTo(5.137, 3);
+    expect(toUm(pixelPitch(FULL_FRAME, res45))).toBeCloseTo(4.395, 3);
     expect(toUm(pitch61)).toBeCloseTo(3.764, 3);
   });
 
   it("reports megapixels", () => {
     expect(megapixels(res24)).toBeCloseTo(24, 6);
+    expect(megapixels(res45)).toBeCloseTo(44.76, 2);
     expect(megapixels(res61)).toBeCloseTo(61, 0);
   });
 

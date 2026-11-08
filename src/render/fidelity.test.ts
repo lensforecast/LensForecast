@@ -354,7 +354,7 @@ describe("resolution fairness (audit: prefilter favoured finer pixels)", () => {
     const scale = imageDistance(mm(200), focus) / focus;
     const ratios: number[] = [];
     for (const sensorFrequency of [40e3, 70e3]) {
-      for (const preset of [RESOLUTION_PRESETS[0]!, RESOLUTION_PRESETS[2]!]) {
+      for (const preset of [RESOLUTION_PRESETS[0]!, RESOLUTION_PRESETS[3]!]) {
         const pitch = pixelPitch(FULL_FRAME, preset);
         const objectPeriod = 1 / (sensorFrequency * scale);
         const scene = planeScene(focus, (x, _y, fp) => 0.5 + 0.4 * prefilteredSine((2 * Math.PI * x) / objectPeriod, objectPeriod, fp));
@@ -461,7 +461,7 @@ describe("scene detail (audit: textures coarser than 61 MP Nyquist when close)",
     const duck = scene.layers.find((l) => l.id === "duck");
     if (!duck || duck.kind !== "plane") throw new Error("duck layer missing");
     const m = imageDistance(mm(1200), 10) / 10;
-    const nyquistPeriod = (2 * pixelPitch(FULL_FRAME, RESOLUTION_PRESETS[2]!)) / m;
+    const nyquistPeriod = (2 * pixelPitch(FULL_FRAME, RESOLUTION_PRESETS[3]!)) / m;
     const step = nyquistPeriod / 12;
     const n = 1024;
     const values: number[] = [];

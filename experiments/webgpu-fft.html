@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>WebGPU FFT prototype</title></head><body>
+<h1>WebGPU FFT prototype</h1>
+<p>Standalone experiment; the main renderer still uses the CPU. Timing includes transfers and readback.</p>
+<button id="run">Run comparison</button><pre id="result">Ready</pre>
+<script type="module">
+import { fft2d, spatialFrequency } from '../src/render/fft.ts';
+import { diffractionMtf } from '../src/physics/diffraction.ts';
+import { createGpuFft } from './webgpu-fft.js';
+const result = document.querySelector('#result');
+document.querySelector('#run').onclick = async () => {
+  result.textContent = 'Running…';
+  let gpu;
+  try {
+    gpu = await createGpuFft();
+    const lines = [`Adapter: ${gpu.info?.description || gpu.info?.device || 'unknown'}`];
+    for (const [width,height] of [[8,8],[3,6],[12,16],[256,256],[768,512],[1024,1024],[1536,1024]]) {
+      const length = width*height;
+      const a = Float64Array.from({length}, (_,i) => Math.sin(i*0.13) + 0.5*Math.cos(i*0.031));
+      const b = Float64Array.from({length}, (_,i) => 0.25*Math.sin(i*0.017));
+      const re=a.slice(), im=b.slice(), gr=a.slice(), gi=b.slice();
+      const t0=performance.now(); fft2d(re,im,width,height); const cpu=performance.now()-t0;
+      const t1=performance.now(); await gpu.transform(gr,gi,width,height); const gpuMs=performance.now()-t1;
+      let squared=0, reference=0, max=0;
+      for(let i=0;i<length;i++){ const err=Math.hypot(gr[i]-re[i],gi[i]-im[i]); max=Math.max(max,err); squared+=err*err; reference+=re[i]*re[i]+im[i]*im[i]; }
+      await gpu.transform(gr,gi,width,height,true);
+      let roundTrip=0; for(let i=0;i<length;i++) roundTrip=Math.max(roundTrip,Math.abs(gr[i]-a[i]),Math.abs(gi[i]-b[i]));
+      if (Math.sqrt(squared/reference) > 2e-5 || roundTrip > 2e-5) throw new Error(`FFT accuracy check failed at ${width}×${height}`);
+      lines.push(`${width}×${height}: CPU ${cpu.toFixed(1)} ms; GPU ${gpuMs.toFixed(1)} ms; relative RMS ${(Math.sqrt(squared/reference)).toExponential(2)}; max error ${max.toExponential(2)}; round-trip max ${roundTrip.toExponential(2)}`);
+      result.textContent=lines.join('\n');
+    }
+    // Apply the same diffraction MTF to a synthetic edge in the frequency
+    // domain. This checks the operation used by the optical pipeline, but is
+    // not an end-to-end test of the current layered renderer.
+    const n=256, pitch=6e-6, er=new Float64Array(n*n), ei=new Float64Array(n*n);
+    for (let y=0;y<n;y++) for(let x=0;x<n;x++) er[y*n+x] = x < n/2 ? 0.2 : 0.8;
+    const cr=er.slice(), ci=ei.slice(), gr=er.slice(), gi=ei.slice();
+    fft2d(cr,ci,n,n); await gpu.transform(gr,gi,n,n);
+    for(let y=0;y<n;y++) for(let x=0;x<n;x++) {
+      const h=diffractionMtf(Math.hypot(spatialFrequency(x,n,pitch),spatialFrequency(y,n,pitch)),550e-9,8);
+      const i=y*n+x; cr[i]*=h; ci[i]*=h; gr[i]*=h; gi[i]*=h;
+    }
+    fft2d(cr,ci,n,n,true); await gpu.transform(gr,gi,n,n,true);
+    let maxEdgeError=0;
+    for(let i=0;i<cr.length;i++) maxEdgeError=Math.max(maxEdgeError,Math.abs(cr[i]-gr[i]));
+    if(maxEdgeError>2e-5) throw new Error(`Diffraction edge mismatch: ${maxEdgeError}`);
+    lines.push(`Diffraction edge: max linear-level difference ${maxEdgeError.toExponential(2)} (limit 2e-5)`);
+    result.textContent=lines.join('\n');
+  } catch(error) { result.textContent = `Unable to run: ${error.message}`; }
+  finally { gpu?.destroy(); }
+};
+</script></body></html>

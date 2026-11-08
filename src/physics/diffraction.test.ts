@@ -13,7 +13,8 @@ import { FULL_FRAME, pixelPitch, RESOLUTION_PRESETS } from "./sensor";
 import { nm, toUm } from "./units";
 
 const GREEN = nm(550);
-const [res24, , res61] = RESOLUTION_PRESETS as [
+const [res24, , , res61] = RESOLUTION_PRESETS as [
+  (typeof RESOLUTION_PRESETS)[number],
   (typeof RESOLUTION_PRESETS)[number],
   (typeof RESOLUTION_PRESETS)[number],
   (typeof RESOLUTION_PRESETS)[number],

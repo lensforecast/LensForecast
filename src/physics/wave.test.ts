@@ -78,13 +78,13 @@ describe("defocused-pupil OTF (Hopkins)", () => {
 
 describe("colour bands", () => {
   it("at f/16 the green band still carries no contrast at the 61 MP Nyquist frequency", () => {
-    const nyquist61 = nyquistFrequency(pixelPitch(FULL_FRAME, RESOLUTION_PRESETS[2]!));
+    const nyquist61 = nyquistFrequency(pixelPitch(FULL_FRAME, RESOLUTION_PRESETS[3]!));
     expect(diffractionCutoffFrequency(COLOR_BANDS.green[0], 16)).toBeLessThan(nyquist61);
     expect(bandDiffractionMtf(nyquist61, COLOR_BANDS.green, 16)).toBe(0);
   });
 
   it("at f/16 the blue band passes a little contrast at the 61 MP Nyquist frequency", () => {
-    const nyquist61 = nyquistFrequency(pixelPitch(FULL_FRAME, RESOLUTION_PRESETS[2]!));
+    const nyquist61 = nyquistFrequency(pixelPitch(FULL_FRAME, RESOLUTION_PRESETS[3]!));
     const blue = bandDiffractionMtf(nyquist61, COLOR_BANDS.blue, 16);
     expect(blue).toBeGreaterThan(0);
     expect(blue).toBeLessThan(0.02);

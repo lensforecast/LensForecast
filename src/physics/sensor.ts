@@ -23,6 +23,7 @@ export interface SensorResolution {
 export const RESOLUTION_PRESETS: readonly SensorResolution[] = [
   { id: "24mp", label: "24 MP", pixelsX: 6000, pixelsY: 4000 },
   { id: "33mp", label: "33 MP", pixelsX: 7008, pixelsY: 4672 },
+  { id: "45mp", label: "45 MP", pixelsX: 8192, pixelsY: 5464 },
   { id: "61mp", label: "61 MP", pixelsX: 9564, pixelsY: 6376 },
 ];
 

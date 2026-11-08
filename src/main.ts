@@ -17,7 +17,8 @@ import { DEFAULT_STUDIO, DUCK_HEAD_OFFSET, type StudioOptions } from "./render/s
 import type { ShotSettings } from "./render/types";
 import { frameView, type FramedView, type ZoomSetting } from "./view";
 
-const APERTURES = [2.8, 4, 5.6, 8, 11, 16];
+/** Conventional third-stop apertures from f/2.8 to f/16. Each slider step is one of these. */
+const APERTURES = [2.8, 3.2, 3.5, 4, 4.5, 5, 5.6, 6.3, 7.1, 8, 9, 10, 11, 13, 14, 16];
 const SHUTTERS = [1 / 4000, 1 / 2000, 1 / 1000, 1 / 500, 1 / 250, 1 / 125, 1 / 60, 1 / 30, 1 / 15];
 const ISOS = [100, 200, 400, 800, 1600, 3200, 6400, 12800, 25600];
 /** Lightroom stops. 100% is one sensor pixel per screen pixel. */
@@ -56,6 +57,16 @@ const state = {
 const resolutionOf = (camera: CameraConfig) => RESOLUTION_PRESETS.find((r) => r.id === camera.resolutionId)!;
 const illuminance = () => lightingOf(state.lightingId).illuminance;
 const formatShutter = (t: number) => (t >= 1 ? `${t} s` : `1/${Math.round(1 / t)} s`);
+const formatAperture = (fNumber: number) => `f/${fNumber}`;
+
+function apertureIndex(fNumber: number): number {
+  let best = 0;
+  for (let i = 1; i < APERTURES.length; i++) {
+    const closer = Math.abs(Math.log(APERTURES[i]!) - Math.log(fNumber)) < Math.abs(Math.log(APERTURES[best]!) - Math.log(fNumber));
+    if (closer) best = i;
+  }
+  return best;
+}
 
 function shotFor(camera: CameraConfig): ShotSettings {
   return {
@@ -131,7 +142,8 @@ function cameraPanel(side: Side): string {
       <div class="controls">
         <label>Focal length <output data-out="focalMm"></output>
           <input data-key="focalMm" type="range" min="100" max="1200" step="10" value="${c.focalMm}" /></label>
-        <label>Aperture <select data-key="fNumber">${options(APERTURES, (n) => `f/${n}`, c.fNumber)}</select></label>
+        <label>Aperture <output data-out="fNumber"></output>
+          <input data-key="fNumber" type="range" min="0" max="${APERTURES.length - 1}" step="1" value="${apertureIndex(c.fNumber)}" /></label>
         <label>Shutter <select data-key="shutterTime">${options(SHUTTERS, formatShutter, c.shutterTime)}</select></label>
         <label>ISO <select data-key="iso">${options(ISOS, (s) => `ISO ${s}`, c.iso)}</select></label>
         <label>Sensor <select data-key="resolutionId">${RESOLUTION_PRESETS.map((r) => `<option value="${r.id}" ${r.id === c.resolutionId ? "selected" : ""}>${r.label} (${r.pixelsX} × ${r.pixelsY})</option>`).join("")}</select></label>
@@ -249,6 +261,7 @@ function updateReadout(side: Side): void {
   const pitch = r.pixelPitch;
 
   panel.querySelector('[data-out="focalMm"]')!.textContent = `${camera.focalMm} mm`;
+  panel.querySelector('[data-out="fNumber"]')!.textContent = formatAperture(camera.fNumber);
   panel.querySelector('[data-out="focusDistance"]')!.textContent = `${shot.focusDistance} m`;
   panel.querySelector<HTMLInputElement>('[data-key="focusDistance"]')!.disabled = camera.focusOnSubject;
 
@@ -327,6 +340,7 @@ app.addEventListener("input", (event) => {
   const camera = state.cameras[side] as unknown as Record<string, unknown>;
   if (key === "focusOnSubject") camera[key] = (target as HTMLInputElement).checked;
   else if (key === "resolutionId") camera[key] = target.value;
+  else if (key === "fNumber") camera[key] = APERTURES[Number(target.value)] ?? APERTURES[0];
   else camera[key] = Number(target.value);
   refresh();
 });

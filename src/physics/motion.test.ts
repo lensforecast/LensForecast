@@ -4,7 +4,8 @@ import { FULL_FRAME, pixelPitch, RESOLUTION_PRESETS } from "./sensor";
 import { blurBudget } from "./sharpness";
 import { mm, nm, toUm } from "./units";
 
-const [res24, , res61] = RESOLUTION_PRESETS as [
+const [res24, , , res61] = RESOLUTION_PRESETS as [
+  (typeof RESOLUTION_PRESETS)[number],
   (typeof RESOLUTION_PRESETS)[number],
   (typeof RESOLUTION_PRESETS)[number],
   (typeof RESOLUTION_PRESETS)[number],

@@ -176,6 +176,7 @@ No detail finer than $f_c$ reaches the sensor, regardless of pixel count.
 |---|---|---|---|
 | 24 MP | 6000 × 4000 | 6.00 µm | 83 cycles/mm |
 | 33 MP | 7008 × 4672 | 5.14 µm | 97 cycles/mm |
+| 45 MP | 8192 × 5464 | 4.39 µm | 114 cycles/mm |
 | 61 MP | 9564 × 6376 | 3.76 µm | 133 cycles/mm |
 
 The diffraction cutoff at 550 nm is 114 cycles/mm at f/16. Averaged over the green band (500–580 nm), the MTF at the 61 MP Nyquist frequency (133 cycles/mm) is exactly 0, and at 111 cycles/mm, beyond 24 MP Nyquist, it is about 1%: a grating there renders with under 1.5% modulation on 61 MP, matching the band-averaged prediction (tested). The extra pixels cannot add detail that diffraction has already removed. All diffraction uses the working f-number $N_w = N(1+m)$, which at 1200 mm focused at 5 m is 32% larger than the marked aperture.
@@ -330,3 +331,11 @@ Tiles are lossless canvas pixels rather than JPEG, avoiding compression changes 
 `npm run benchmark` (Node 22.15+) measures 600 × 400 fit and native-pixel views plus a cached ISO change. Optical images are cached per worker in a 32 MiB LRU: ISO, seed, noise enablement and scalar illuminance affect sensor readout only; scene, camera geometry, shutter, resolution and crop changes invalidate the optical key. Worker recreation discards the cache.
 
 The CPU implementation gathers FFT columns in cache-friendly blocks, specializes the unit/imaginary butterfly stages, precomputes separable frequency factors, and reuses fBm normalization constants. Sampling density and the optical models are unchanged. Representative local Node timings after these changes were 4.9 s for fit and 7.7 s for native, versus 5.6 s and 9.0 s before; cached ISO readout plus sRGB encoding took about 0.11 s. Timings vary by machine, viewport and scene, and exclude the UI refinement delay. FFT/MTF and cache-invalidation tests cover these paths.
+
+### WebGPU FFT experiment
+
+`experiments/webgpu-fft.html` is a standalone development-only benchmark (`npm run dev`, then open `/experiments/webgpu-fft.html`). It does not change the production renderer. It implements full 2D radix-2 and mixed-radix 3 × 2^k transforms in WebGPU compute shaders using `f32`; the CPU reference uses `f64`. The benchmark includes buffer creation, upload, dispatch, GPU completion, and readback, but excludes initial adapter and pipeline creation. It checks forward transform error, inverse round-trip error, and a synthetic diffraction-filtered edge. Each check is compared with the CPU implementation and reports an error if its tolerance fails.
+
+One local in-app browser run measured 25.5 ms CPU versus 13.5 ms GPU for a 1024 × 1024 forward transform, relative RMS error 4.79e-7, and maximum linear-level diffraction edge difference 9.98e-8. The 8 × 8 case was slower on the GPU (0.1 ms versus 1.5 ms). These are single-run microbenchmarks, not end-to-end render timings or guarantees for other hardware. The adapter did not expose its identity. GPU initialization, scene generation, layer compositing, memory pressure, and shader precision need further measurement.
+
+The experiment supports both transform sizes used by the renderer. A local mixed-radix 1536 × 1024 run measured 43.6 ms CPU versus 22.8 ms GPU, with relative RMS error 3.48e-7 and maximum round-trip error 1.09e-6. It still does not implement partial-row transforms, packed-channel filtering, or depth-dependent layered filters. A production integration would need those capabilities, a CPU fallback, browser/device-loss handling, and the existing full optical fidelity tests run against the GPU implementation. Moving an FFT to the GPU alone does not remove the CPU procedural scene-generation bottleneck.

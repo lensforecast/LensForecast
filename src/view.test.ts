@@ -3,7 +3,7 @@ import { FULL_FRAME, pixelPitch, RESOLUTION_PRESETS } from "./physics";
 import { frameView } from "./view";
 
 const res24 = RESOLUTION_PRESETS[0]!;
-const res61 = RESOLUTION_PRESETS[2]!;
+const res61 = RESOLUTION_PRESETS[3]!;
 const pitch24 = pixelPitch(FULL_FRAME, res24);
 
 const sensor = {
